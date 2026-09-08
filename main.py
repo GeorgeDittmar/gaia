@@ -5,12 +5,15 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 from textual.app import App, ComposeResult
+from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static, Button, Switch, Label, OptionList
 from textual.widgets.option_list import Option
 from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual.events import Key
 from textual import work
+
+from src.gaia.agent import Gaia
 
 SETTINGS_FILE = Path("settings.json")
 
@@ -39,13 +42,11 @@ SLASH_COMMANDS = [
 
 
 def save_config(config: Dict[str, Any]) -> None:
-    """Persists settings dictionary to JSON file."""
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
 
 def load_config() -> Dict[str, Any]:
-    """Reads settings from disk or creates default settings.json if missing."""
     if not SETTINGS_FILE.exists():
         try:
             save_config(DEFAULT_SETTINGS)
@@ -61,8 +62,6 @@ def load_config() -> Dict[str, Any]:
 
 
 class ChatTurn(Static):
-    """Selectable message block that highlights visually when focused."""
-
     can_focus = True
 
     def on_focus(self) -> None:
@@ -70,8 +69,6 @@ class ChatTurn(Static):
 
 
 class HelpModal(ModalScreen[None]):
-    """Modal dialog displaying keyboard navigation and slash commands reference."""
-
     BINDINGS = [
         ("escape", "dismiss_help", "Close Help"),
         ("q", "dismiss_help", "Close Help"),
@@ -152,7 +149,6 @@ class HelpModal(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
             yield Static("— G.A.I.A. SYSTEM REFERENCE —", id="help-title")
-
             yield Static("GLOBAL KEYBOARD SHORTCUTS", classes="help-section-header")
 
             keyboard_shortcuts = [
@@ -192,8 +188,6 @@ class HelpModal(ModalScreen[None]):
 
 
 class CommandInput(Input):
-    """Input widget supporting command-level and dynamic argument-level autocomplete."""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.popup: OptionList | None = None
@@ -255,7 +249,6 @@ class CommandInput(Input):
             self.popup.display = False
 
     def on_key(self, event: Key) -> None:
-        """Intercept key interactions for autocomplete popup navigation."""
         if not (self.popup and self.popup.display):
             return
 
@@ -286,11 +279,7 @@ class CommandInput(Input):
 
 
 class SettingsModal(ModalScreen[Dict[str, Any]]):
-    """Interactive popup window for system configuration."""
-
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-    ]
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
     CSS = """
     SettingsModal {
@@ -434,7 +423,8 @@ class SettingsModal(ModalScreen[Dict[str, Any]]):
 
 
 class GaiaTUIApp(App):
-    """G.A.I.A. Terminal UI with Instant Exit and Reliable Health Monitoring."""
+
+    connection_status = reactive("CHECKING...")
 
     CSS = """
     Screen {
@@ -453,14 +443,41 @@ class GaiaTUIApp(App):
         align-vertical: middle;
     }
 
+    #custom-header Static {
+        height: 1;
+        content-align: left middle;
+    }
+
     .header-title {
         color: #00f0ff;
         text-style: bold;
     }
 
-    .header-status {
-        color: #ff007f;
+    .llm-badge {
         text-style: bold;
+        padding: 0 1;
+        margin-right: 2;
+        content-align: center middle;
+    }
+
+    .status-online {
+        background: #238636;
+        color: #ffffff;
+    }
+
+    .status-checking {
+        background: #d29922;
+        color: #0d1117;
+    }
+
+    .status-unreachable {
+        background: #da3633;
+        color: #ffffff;
+    }
+
+    .header-info {
+        color: #8b949e;
+        content-align: right middle;
     }
 
     #chat-container {
@@ -578,17 +595,36 @@ class GaiaTUIApp(App):
     def __init__(self):
         super().__init__()
         self.settings = load_config()
-        self.connection_status = "CHECKING..."
+        self.__core_agent = Gaia()
         self.is_shutting_down = False
 
+    def watch_connection_status(self, new_status: str) -> None:
+        """Reactive watcher that safely updates the status badge once mounted."""
+        if not self.is_mounted:
+            return
+        try:
+            badge = self.query_one("#llm-status-badge", Static)
+            badge.update(f"LLM: {new_status}")
+            badge.remove_class("status-online", "status-checking", "status-unreachable")
+
+            if new_status == "ONLINE":
+                badge.add_class("status-online")
+            elif new_status == "CHECKING...":
+                badge.add_class("status-checking")
+            else:
+                badge.add_class("status-unreachable")
+
+            footer_status = self.query_one("#footer-status", Static)
+            footer_status.update(f"[STATUS: {new_status}]")
+        except Exception:
+            pass
+
     def force_exit(self) -> None:
-        """Flags app state as shutting down, cancels active workers, and exits immediately."""
         self.is_shutting_down = True
         self.workers.cancel_all()
         self.exit()
 
     def action_quit(self) -> None:
-        """Overrides default Ctrl+C behavior to force an immediate exit on single press."""
         self.force_exit()
 
     def compose(self) -> ComposeResult:
@@ -596,8 +632,11 @@ class GaiaTUIApp(App):
             yield Static(" G.A.I.A. // LOCAL ENGINE v0.1.0", classes="header-title")
             yield Static("", classes="spacer")
             yield Static(
-                self._format_status(), classes="header-status", id="header-status"
+                f"LLM: {self.connection_status}",
+                classes="llm-badge status-checking",
+                id="llm-status-badge",
             )
+            yield Static("", id="header-config-info", classes="header-info")
 
         with ScrollableContainer(id="chat-container"):
             yield Static(
@@ -627,12 +666,25 @@ class GaiaTUIApp(App):
             yield Static("PRIVATE. OPEN. YOURS.", classes="header-title")
 
     def on_mount(self) -> None:
-        self.call_after_refresh(self._refresh_status)
+        self._refresh_config_info()
+        # Force initial badge styling on mount
+        self.watch_connection_status(self.connection_status)
         self.ping_loop()
+
+    def _refresh_config_info(self) -> None:
+        try:
+            config_info = self.query_one("#header-config-info", Static)
+            enc_label = (
+                "SQLCipher" if self.settings.get("encrypted", True) else "DISABLED"
+            )
+            config_info.update(
+                f"MODEL: [bold #00f0ff]{self.settings.get('model', 'qwen2.5-coder:32b')}[/bold #00f0ff] | VAULT: {enc_label}"
+            )
+        except Exception:
+            pass
 
     @work(exclusive=True, thread=True)
     async def ping_loop(self) -> None:
-        """Background loop continuously validating endpoint status safely."""
         while not self.is_shutting_down:
             endpoint = self.settings.get("endpoint", "http://localhost:11434")
             try:
@@ -645,15 +697,13 @@ class GaiaTUIApp(App):
 
             if status != self.connection_status:
                 self.connection_status = status
-                self.call_from_thread(self._refresh_status)
 
-            for _ in range(50):
+            for _ in range(30):
                 if self.is_shutting_down:
                     return
                 await asyncio.sleep(0.1)
 
     async def _check_connection(self, endpoint: str) -> str:
-        """Pings the endpoint URL asynchronously and returns plain text status."""
         try:
             req = urllib.request.Request(
                 endpoint, headers={"User-Agent": "GAIA-TUI/1.0"}, method="GET"
@@ -661,7 +711,7 @@ class GaiaTUIApp(App):
             loop = asyncio.get_running_loop()
 
             def _ping():
-                with urllib.request.urlopen(req, timeout=2.0) as response:
+                with urllib.request.urlopen(req, timeout=1.5) as response:
                     return response.status
 
             code = await loop.run_in_executor(None, _ping)
@@ -672,28 +722,7 @@ class GaiaTUIApp(App):
         except Exception:
             return "UNREACHABLE"
 
-    def _refresh_status(self) -> None:
-        """Updates both top header and bottom footer status displays."""
-        if self.is_shutting_down:
-            return
-
-        try:
-            header = self.query_one("#header-status", Static)
-            header.update(self._format_status())
-
-            footer_status = self.query_one("#footer-status", Static)
-            footer_status.update(f"[STATUS: {self.connection_status}]")
-        except Exception:
-            pass
-
-    def _format_status(self) -> str:
-        enc_label = (
-            "SQLCipher" if self.settings.get("encrypted", True) else "DISABLED"
-        )
-        return f"STATUS: {self.connection_status} | ENCRYPTED: {enc_label} | MODEL: {self.settings.get('model', 'qwen2.5-coder:32b')}"
-
     def action_show_help(self) -> None:
-        """Pushes the Help Modal overlay to the screen stack."""
         self.push_screen(HelpModal())
 
     def action_select_prev_turn(self) -> None:
@@ -769,7 +798,7 @@ class GaiaTUIApp(App):
                 if arg:
                     self.settings["model"] = arg
                     save_config(self.settings)
-                    self._refresh_status()
+                    self._refresh_config_info()
                     await chat_box.mount(
                         ChatTurn(
                             f"[bold #00f0ff]Active Model Updated:[/bold #00f0ff] {arg}",
@@ -791,7 +820,7 @@ class GaiaTUIApp(App):
                     if new_config:
                         self.settings.update(new_config)
                         save_config(self.settings)
-                        self._refresh_status()
+                        self._refresh_config_info()
 
                         self.call_after_refresh(
                             chat_box.mount,
@@ -820,7 +849,7 @@ class GaiaTUIApp(App):
             case "status":
                 status_info = (
                     "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
-                    f"  • Connection: {self.connection_status}\n"
+                    f"  • LLM Endpoint Status: {self.connection_status}\n"
                     f"  • Model Runtime: {self.settings['model']}\n"
                     f"  • Host Endpoint: {self.settings['endpoint']}\n"
                     f"  • Vault State: {'AES-256 (SQLCipher)' if self.settings['encrypted'] else 'Unencrypted Plaintext'}\n"
@@ -847,28 +876,51 @@ class GaiaTUIApp(App):
         )
         await chat_box.mount(agent_widget)
 
-        response_accumulator = (
-            f"[bold #00f0ff]G.A.I.A. ({self.settings['model']}):[/bold #00f0ff] "
-        )
-        simulated_tokens = [
-            "Routing ",
-            "request ",
-            f"via {self.settings['endpoint']}...\n\n",
-            "```python\n",
-            "# Pydantask async workflow execution\n",
-            "async def handle():\n",
-            "    return True\n",
-            "```\n",
-            "Task complete.",
-        ]
+        base_prefix = f"[bold #00f0ff]G.A.I.A. ({self.settings['model']}):[/bold #00f0ff] "
+        response_accumulator = ""
+        dots_states = [".  ", ".. ", "..."]
+        dot_index = 0
+        first_token_received = False
 
-        for token in simulated_tokens:
-            if self.is_shutting_down:
-                return
-            await asyncio.sleep(0.06)
-            response_accumulator += token
-            agent_widget.update(response_accumulator)
-            chat_box.scroll_end()
+        # Start an async task to cycle the animated dots while waiting for the first token
+        async def animate_waiting():
+            nonlocal dot_index
+            while not first_token_received and not self.is_shutting_down:
+                dot_text = dots_states[dot_index % len(dots_states)]
+                agent_widget.update(base_prefix + f"[dim #8b949e]{dot_text}[/dim #8b949e]")
+                dot_index += 1
+                await asyncio.sleep(0.2)
+
+        anim_task = asyncio.create_task(animate_waiting())
+
+        try:
+            async for token in self.__core_agent.ainteract(prompt=prompt):
+                if self.is_shutting_down:
+                    break
+
+                if not first_token_received:
+                    first_token_received = True
+                    anim_task.cancel()
+                    try:
+                        await anim_task
+                    except asyncio.CancelledError:
+                        pass
+                    response_accumulator = ""  # Clear any residual loading text
+
+                response_accumulator += token
+                agent_widget.update(base_prefix + response_accumulator)
+                chat_box.scroll_end()
+        finally:
+            if not anim_task.done():
+                anim_task.cancel()
+                try:
+                    await anim_task
+                except asyncio.CancelledError:
+                    pass
+
+        # Final clean render
+        agent_widget.update(base_prefix + response_accumulator)
+        chat_box.scroll_end()
 
 
 if __name__ == "__main__":
