@@ -268,15 +268,12 @@ class GaiaTUIApp(App):
             )
 
         with Vertical(id="input-container"):
-            cmd_input = CommandInput(
+            yield CommandInput(
                 placeholder=(
                     "[G.A.I.A.] > Ask G.A.I.A. or type / for commands..."
                 ),
                 id="prompt-input",
             )
-            yield cmd_input
-            # Position the autocomplete popup inside this container
-            cmd_input.set_parent_container(self.query_one("#input-container", Vertical))
 
         with Horizontal(id="footer-bar"):
             yield Static(
@@ -296,6 +293,21 @@ class GaiaTUIApp(App):
         self._refresh_config_info()
         self.watch_connection_status(self.connection_status)
         self.ping_loop()
+        self._mount_autocomplete_popup()
+
+    def _mount_autocomplete_popup(self) -> None:
+        """Create and mount the autocomplete popup into the input container.
+
+        Must be called in on_mount() after the widget tree is fully built
+        so that query_one() can find the input container and CommandInput.
+        """
+        try:
+            container = self.query_one("#input-container")
+            cmd_input = self.query_one("#prompt-input", CommandInput)
+            if cmd_input._popup:
+                container.mount(cmd_input._popup)
+        except Exception:
+            pass  # Gracefully degrade if anything goes wrong
 
     def _refresh_config_info(self) -> None:
         try:

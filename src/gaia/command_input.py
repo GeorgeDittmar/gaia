@@ -10,24 +10,20 @@ from gaia.config import SLASH_COMMANDS, AVAILABLE_MODELS
 
 
 class CommandInput(Input):
-    """Text input with inline slash-command / model autocomplete."""
+    """Text input with inline slash-command / model autocomplete.
+
+    The autocomplete popup is created in on_mount but must be
+    mounted into a container by the parent app (GaiaTUIApp)
+    after the widget tree is fully built.  Call
+    ``popup_ready()`` from the app's ``on_mount`` once the
+    popup is mounted into the DOM.
+    """
 
     _popup: OptionList | None = reactive(None)
 
     def on_mount(self) -> None:
         self._popup = OptionList(id="autocomplete-popup")
         self._popup.display = False
-        # The OptionList is mounted into the parent container by the app.
-        # We keep a reference here but defer mounting to GaiaTUIApp.
-
-    def set_parent_container(self, container) -> None:  # type: ignore[reportOptionalMemberAccess]
-        """Mount the popup OptionList into the app's input container.
-
-        Called once by GaiaTUIApp after compose() so that absolute
-        positioning of the popup works correctly.
-        """
-        if self._popup:
-            container.mount(self._popup)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         val = event.value
