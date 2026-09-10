@@ -1,13 +1,35 @@
 [project]
 name = "gaia"
 version = "0.1.0"
-description = "Add your description here"
+description = "G.A.I.A. — a private, local, zero-telemetry personal AI assistant"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "pydantask>=0.1.0a6",
     "pydantic>=2.13.5",
     "pydantic-ai>=2.40.0",
     "pydantic-ai-harness>=0.29.0",
     "textual>=8.2.8",
+]
+
+[project.scripts]
+gaia = "gaia.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
