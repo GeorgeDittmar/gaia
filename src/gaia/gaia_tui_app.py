@@ -13,6 +13,7 @@ from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
 
 from gaia.core.agent import Gaia
+from gaia.core.memory import SQLiteMemoryStore
 from gaia.config import (
     DEFAULT_SETTINGS,
     load_config,
@@ -210,8 +211,29 @@ class GaiaTUIApp(App):
     def __init__(self):
         super().__init__()
         self.settings = load_config()
-        self.__core_agent = Gaia()
+        self._memory = self._init_memory()
+        self.__core_agent = Gaia(
+            self.settings.get("system_prompt"),
+            memory=self._memory,
+        )
         self.is_shutting_down = False
+
+    def _init_memory(self) -> SQLiteMemoryStore | None:
+        """Create a MemoryStore if the memory path is configured."""
+        try:
+            db_path = self.settings.get("memory_db", "gaia-memory.db")
+            encrypted = self.settings.get("encrypted", False)
+            store = SQLiteMemoryStore(db_path, encrypted=encrypted)
+            asyncio.get_running_loop().run_until_complete(store.initialize())
+            return store
+        except Exception:
+            # Memory is optional — degrade gracefully
+            return None
+
+    async def _close_memory(self) -> None:
+        """Close the memory store on shutdown."""
+        if self._memory is not None:
+            await self._memory.close()
 
     def watch_connection_status(self, new_status: str) -> None:
         """Reactive watcher that safely updates the status badge once mounted."""
@@ -237,8 +259,10 @@ class GaiaTUIApp(App):
             pass
 
     def force_exit(self) -> None:
-        """Graceful shutdown: stop workers and exit."""
+        """Graceful shutdown: close memory, stop workers and exit."""
         self.is_shutting_down = True
+        if self._memory is not None:
+            asyncio.get_running_loop().run_until_complete(self._close_memory())
         self.workers.cancel_all()
         self.exit()
 
