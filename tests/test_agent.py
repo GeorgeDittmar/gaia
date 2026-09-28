@@ -58,7 +58,7 @@ def gaia_agent(mock_openai_chat_model):
     ):
         from gaia.core.agent.base import Gaia
 
-        agent = Gaia()
+        agent = Gaia("You are a helpful assistant.")
         agent._Gaia__core_agent = mock_agent  # inject our mock
         return agent
 
@@ -74,7 +74,7 @@ class TestGaiaInit:
             patch("gaia.core.agent.base.Agent") as mock_agent_cls,
         ):
             from gaia.core.agent.base import Gaia
-            Gaia()
+            Gaia("You are a helpful assistant.")
 
         mock_agent_cls.assert_called_once()
 
@@ -104,7 +104,7 @@ class TestGaiaAinteract:
             patch("gaia.core.agent.base.OpenAIProvider"),
             patch("gaia.core.agent.base.Agent", return_value=mock_agent),
         ):
-            agent = Gaia()
+            agent = Gaia("You are a helpful assistant.")
             agent._Gaia__core_agent = mock_agent
 
         tokens = [t async for t in agent.ainteract(prompt="")]
@@ -117,7 +117,9 @@ class TestGaiaAinteract:
         async for token in gaia_agent.ainteract(prompt="test prompt"):
             tokens.append(token)
 
-        gaia_agent._Gaia__core_agent.run_stream.assert_called_once_with("test prompt")
+        gaia_agent._Gaia__core_agent.run_stream.assert_called_once_with(
+            "test prompt", message_history=[]
+        )
 
     @pytest.mark.asyncio
     async def test_is_async_generator(self):
@@ -132,7 +134,7 @@ class TestGaiaAinteract:
             mock_agent = MagicMock()
             mock_agent.run_stream = MagicMock(return_value=mock_cm)
             mock_agent_cls.return_value = mock_agent
-            agent = Gaia()
+            agent = Gaia("You are a helpful assistant.")
             agent._Gaia__core_agent = mock_agent
 
         result = agent.ainteract(prompt="x")
