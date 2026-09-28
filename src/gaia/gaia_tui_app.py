@@ -221,7 +221,7 @@ class GaiaTUIApp(App):
     def _init_memory(self) -> SQLiteMemoryStore | None:
         """Create a MemoryStore if the memory path is configured."""
         try:
-            db_path = self.settings.get("memory_db", "gaia-memory.db")
+            db_path = self.settings["memory_db"]
             encrypted = self.settings.get("encrypted", False)
             store = SQLiteMemoryStore(db_path, encrypted=encrypted)
             asyncio.get_running_loop().run_until_complete(store.initialize())
