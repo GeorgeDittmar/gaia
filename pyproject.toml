@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-ai>=2.40.0",
     "pydantic-ai-harness>=0.29.0",
+    "ruff>=0.16.9",
     "textual>=8.2.8",
 ]
 
