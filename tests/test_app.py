@@ -176,6 +176,27 @@ class TestGaiaTUIAppInit:
         assert "ctrl+l" in commands
         assert "f1" in commands
 
+    def test_init_memory_creates_store(self) -> None:
+        """_init_memory creates and initializes a store when memory_db is set."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            with patch(
+                "gaia.gaia_tui_app.load_config",
+                return_value={"model": "test", "memory_db": str(db_path)},
+            ):
+                with patch("gaia.gaia_tui_app.Gaia"):
+                    app = GaiaTUIApp()
+
+            assert app._memory is not None
+            assert app._memory._db_path == db_path.resolve()
+        finally:
+            db_path.unlink(missing_ok=True)
+
 
 class TestForceExit:
     """Tests for GaiaTUIApp.force_exit()."""
@@ -207,3 +228,20 @@ class TestForceExit:
             app.force_exit()
 
         app.exit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_exit_closes_memory(self) -> None:
+        """force_exit calls _close_memory when memory is present."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app = GaiaTUIApp()
+            mock_store = AsyncMock()
+            app._memory = mock_store
+            app.exit = MagicMock()
+            app.force_exit()
+
+            # create_task schedules but doesn't run immediately; await it
+            task = getattr(app, "_GaiaTUIApp__close_task", None)
+            if task is not None:
+                await task
+            mock_store.close.assert_awaited_once()
+

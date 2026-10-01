@@ -219,12 +219,17 @@ class GaiaTUIApp(App):
         self.is_shutting_down = False
 
     def _init_memory(self) -> SQLiteMemoryStore | None:
-        """Create a MemoryStore if the memory path is configured."""
+        """Create a MemoryStore if the memory path is configured.
+
+        Runs in ``__init__`` where no event loop exists yet, so we use
+        ``asyncio.run()`` to create a temporary loop for the one-shot
+        ``initialize()`` call.
+        """
         try:
             db_path = self.settings["memory_db"]
             encrypted = self.settings.get("encrypted", False)
             store = SQLiteMemoryStore(db_path, encrypted=encrypted)
-            asyncio.get_running_loop().run_until_complete(store.initialize())
+            asyncio.run(store.initialize())
             return store
         except Exception:
             # Memory is optional — degrade gracefully
@@ -259,10 +264,21 @@ class GaiaTUIApp(App):
             pass
 
     def force_exit(self) -> None:
-        """Graceful shutdown: close memory, stop workers and exit."""
+        """Graceful shutdown: close memory, stop workers and exit.
+
+        When called during normal app shutdown the event loop is already
+        running, so ``run_until_complete`` would raise.  We use
+        ``create_task`` (keeping a reference to prevent GC) when a loop
+        is active, falling back to ``asyncio.run()`` otherwise.
+        """
         self.is_shutting_down = True
         if self._memory is not None:
-            asyncio.get_running_loop().run_until_complete(self._close_memory())
+            try:
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self._close_memory())
+                self.__close_task = task  # keep reference to prevent GC
+            except RuntimeError:
+                asyncio.run(self._close_memory())
         self.workers.cancel_all()
         self.exit()
 
