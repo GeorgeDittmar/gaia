@@ -9,6 +9,7 @@ from gaia.config import (
     is_slash_input,
     check_endpoint,
     EXIT_COMMANDS,
+    SLASH_COMMANDS,
 )
 from gaia.gaia_tui_app import GaiaTUIApp
 
@@ -244,4 +245,62 @@ class TestForceExit:
             if task is not None:
                 await task
             mock_store.close.assert_awaited_once()
+
+
+class TestRememberCommand:
+    """Tests for the /remember slash command."""
+
+    def _make_app_and_chatbox(self, memory=None):
+        """Create a GaiaTUIApp with mocked memory and chat_box."""
+        app = GaiaTUIApp()
+        app._memory = AsyncMock() if memory is False else memory
+        chat_box = MagicMock()
+        chat_box.mount = AsyncMock()  # mount is an async operation
+        app.query_one = MagicMock(
+            side_effect=lambda sel, cls: chat_box if sel == "#chat-container" else MagicMock()
+        )
+        app.query = MagicMock(return_value=[])
+        return app, chat_box
+
+    @pytest.mark.asyncio
+    async def test_remember_inserts_fact(self) -> None:
+        """/remember <fact> calls semantic_insert with correct args."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
+
+            await app.handle_slash_command("/remember user likes python")
+
+            app._memory.semantic_insert.assert_awaited_once_with(
+                content="user likes python",
+                category="preference",
+                confidence=1.0,
+                source="user",
+            )
+            chat_box.mount.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_remember_no_arg_shows_usage(self) -> None:
+        """/remember without an arg shows usage help."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
+
+            await app.handle_slash_command("/remember")
+
+            app._memory.semantic_insert.assert_not_called()
+            chat_box.mount.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remember_without_memory_shows_message(self) -> None:
+        """/remember when _memory is None does not raise."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=None)
+
+            await app.handle_slash_command("/remember test fact")
+
+            chat_box.mount.assert_called_once()
+
+    def test_remember_in_slash_commands_list(self) -> None:
+        """/remember is listed in SLASH_COMMANDS for autocomplete."""
+        cmd_names = {entry["cmd"] for entry in SLASH_COMMANDS}
+        assert "/remember" in cmd_names, "Missing /remember from SLASH_COMMANDS"
 

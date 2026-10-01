@@ -34,6 +34,7 @@ SLASH_COMMANDS = [
     {"cmd": "/clear", "desc": "Clear terminal chat buffer"},
     {"cmd": "/status", "desc": "Display active runtime diagnostics"},
     {"cmd": "/help", "desc": "Show interactive keybindings & commands overlay"},
+    {"cmd": "/remember", "desc": "Store a fact in semantic memory"},
     {"cmd": "/exit", "desc": "Exit the application"},
     {"cmd": "/close", "desc": "Exit the application"},
 ]

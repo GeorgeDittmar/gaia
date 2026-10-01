@@ -537,6 +537,40 @@ class GaiaTUIApp(App):
                     ChatTurn(status_info, classes="agent-msg")
                 )
 
+            case "remember":
+                if arg:
+                    if self._memory is not None:
+                        await self._memory.semantic_insert(
+                            content=arg,
+                            category="preference",
+                            confidence=1.0,
+                            source="user",
+                        )
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #00f0ff]Fact Stashed:[/bold #00f0ff] "
+                                f"[dim #8b949e]{arg}[/dim #8b949e]",
+                                classes="agent-msg",
+                            )
+                        )
+                    else:
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
+                                "Memory store is not initialized.",
+                                classes="agent-msg",
+                            )
+                        )
+                else:
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Usage:[/bold #ff007f] "
+                            "/remember <fact to store>\n"
+                            "Example: [bold]/remember user prefers Python[/bold]",
+                            classes="agent-msg",
+                        )
+                    )
+
             case _:
                 await chat_box.mount(
                     ChatTurn(
