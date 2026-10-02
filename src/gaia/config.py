@@ -100,6 +100,7 @@ async def check_endpoint(endpoint: str, timeout: float = 1.5) -> str:
     so it can be unit-tested by patching ``urllib.request.urlopen``.
     """
     import asyncio
+    import urllib.error
     import urllib.request
 
     req = urllib.request.Request(
@@ -115,6 +116,12 @@ async def check_endpoint(endpoint: str, timeout: float = 1.5) -> str:
     try:
         code = await loop.run_in_executor(None, _ping)
         if 200 <= code < 400:
+            return "ONLINE"
+        return f"HTTP {code}"
+    except urllib.error.HTTPError as e:
+        # urllib raises HTTPError for 4xx/5xx — server is alive
+        code = e.code
+        if 200 <= code < 500:
             return "ONLINE"
         return f"HTTP {code}"
     except Exception:

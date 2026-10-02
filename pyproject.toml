@@ -3,7 +3,7 @@ name = "gaia"
 version = "0.1.0"
 description = "G.A.I.A. — a private, local, zero-telemetry personal AI assistant"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13.5",
     "pydantic-ai>=2.40.0",

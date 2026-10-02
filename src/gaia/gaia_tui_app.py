@@ -362,7 +362,7 @@ class GaiaTUIApp(App):
         except Exception:
             pass
 
-    @work(exclusive=True, thread=True)
+    @work(exclusive=True)
     async def ping_loop(self) -> None:
         while not self.is_shutting_down:
             endpoint = self.settings.get("endpoint", "http://localhost:11434")
