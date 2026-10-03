@@ -11,6 +11,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "endpoint": "http://localhost:11434",
     "encrypted": True,
     "memory_db": "gaia-memory.db",
+    "memory": {
+        "backend": "sqlite",  # "sqlite" or "chroma"
+    },
     "system_prompt": (
         "You are G.A.I.A., an advanced, secure local AI agent. "
         "Provide clear, direct, and technically rigorous assistance. "
