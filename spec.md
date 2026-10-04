@@ -115,9 +115,16 @@ CREATE INDEX idx_semantic_updated ON semantic_facts(updated_at DESC);
 - Vector search → Redis vector indexing (`HNSW` index on the vector field)
 
 **Autodistillation triggers:**
+- Post-turn extraction: after each conversation turn, a background task calls the LLM to extract facts from the user prompt + agent response pair. Runs on a 2-second delay after the turn completes (avoids competing with the streaming call). Best-effort — never blocks the response. Facts are tagged with `source="auto_extract"` and `confidence=0.8`.
+- `/extract` slash command: manually re-processes the last N (configurable, default 10) turns from episodic memory and extracts any missed facts. Shows progress in chat ("Extracting facts..." → "X facts extracted"). Useful for backfilling when the feature is first enabled.
 - After a conversation ends, scan for repeatable facts worth storing
 - Periodic summarization of raw episodic traces into semantic summaries
 - User correction: when the user says "that's wrong" or "actually, X is the rule," update semantic memory
+
+**Auto-classification:** Extracted facts are classified into categories by keyword matching:
+- `preference`: name, location, lives, job, role, prefers, likes, city, state, etc.
+- `project`: project, repo, code, bug, feature, working on, building, github, docker, etc.
+- `general`: everything else
 
 **Privacy:** Semantic memory is the user's personal knowledge base. Never sent to any external service by default. If cloud sync is enabled, it is end-to-end encrypted with the user's key.
 
@@ -317,6 +324,7 @@ class MemoryStore(Protocol):
 
 **Built-in implementations:**
 - `SQLiteMemoryStore` — v1 default. Uses SQLite + SQLCipher (if encryption enabled). Supports FTS5 search.
+- `ChromaMemoryStore` — vector-backed store using ChromaDB + `all-MiniLM-L6-v2` ONNX embeddings. Handles stopwords, apostrophes, and punctuation better than FTS5 for semantic queries (e.g., "what is my name?" returns results where FTS5 finds nothing). Persists to `~/.gaia/chroma/` by default.
 - `RedisMemoryStore` — planned v2+. Uses Redis with RediSearch for full-text and vector search. Leverages `EXPIRE` for retention, `HGETALL/HSET` for individual records.
 - `FileStore` — lightweight, no dependencies. Reads/writes JSON/YAML files directly. Useful for development or single-user single-device setups where SQLCipher is overkill.
 
@@ -598,11 +606,14 @@ gaia export       # Export all data (memory, logs, settings)
 - [x] Basic autocomplete
 
 ### Phase 2: Memory Core
-- [ ] SQLite database schema (semantic, episodic, procedural tables)
-- [ ] SQLCipher encryption integration
-- [ ] Semantic memory: CRUD + FTS5 search
-- [ ] Episodic memory: recording + time-bounded search
-- [ ] Procedural memory: YAML-based registry + execution
+- [x] SQLite database schema (semantic, episodic, procedural tables)
+- [x] SQLCipher encryption integration
+- [x] Semantic memory: CRUD + FTS5 search
+- [x] Episodic memory: recording + time-bounded search
+- [x] Procedural memory: YAML-based registry + execution
+- [x] ChromaDB vector-backed MemoryStore (`ChromaMemoryStore`) — pluggable backend selectable via `memory.backend` in settings
+- [x] Post-turn fact extraction — background LLM call after each conversation turn, auto-classifies facts, saves to semantic memory with confidence 0.8
+- [x] `/extract` slash command — backfills facts from recent episodic memory
 - [ ] Autodistillation pipeline (episodic → semantic summarization)
 - [ ] `/memory` TUI panel for browsing/editing
 
