@@ -6,6 +6,7 @@ episodic logging so every conversation turn is persisted.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -204,7 +205,8 @@ class Gaia:
             f"Agent: {agent_response[:500]}"
         )
 
-        from openai import AsyncOpenAI
+        # Brief delay to avoid competing with the main streaming API call
+        await asyncio.sleep(2)
 
         client = AsyncOpenAI(
             base_url=self.DEFAULT_ENDPOINT,
