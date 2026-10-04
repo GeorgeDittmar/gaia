@@ -684,7 +684,7 @@ class GaiaTUIApp(App):
 
         # 5. Background fact extraction (never blocks response)
         if self._memory is not None:
-            self.call_later(0, self._start_fact_extraction, prompt, response_accumulator)
+            self.call_later(self._start_fact_extraction, prompt, response_accumulator)
 
     def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
         """Launch post-turn fact extraction as a background task."""
