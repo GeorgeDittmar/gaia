@@ -688,6 +688,18 @@ class GaiaTUIApp(App):
 
     def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
         """Launch post-turn fact extraction as a background task."""
-        asyncio.create_task(
-            self.__core_agent.post_turn_extract(user_prompt, agent_response)
+        asyncio.create_task(self._run_extraction(user_prompt, agent_response))
+
+    async def _run_extraction(
+        self, user_prompt: str, agent_response: str
+    ) -> None:
+        """Run extraction and notify the user when facts are saved."""
+        count = await self.__core_agent.post_turn_extract(
+            user_prompt, agent_response
         )
+        if count > 0:
+            self.notify(
+                f"{count} fact{'s' if count > 1 else ''} extracted and saved",
+                title="G.A.I.A. Memory",
+                timeout=3,
+            )

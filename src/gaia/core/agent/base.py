@@ -211,6 +211,7 @@ class Gaia:
         client = AsyncOpenAI(
             base_url=self.DEFAULT_ENDPOINT,
             api_key="not-needed",
+            timeout=60.0,
         )
 
         resp = await client.chat.completions.create(
