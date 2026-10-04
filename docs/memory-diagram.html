@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G.A.I.A. Memory Architecture</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --border: #21262d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --cyan: #00f0ff;
+    --magenta: #ff007f;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --red: #f85149;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    color: var(--cyan);
+    margin-bottom: 4px;
+    letter-spacing: 2px;
+  }
+
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-bottom: 24px;
+  }
+
+  .diagram-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+
+  .mermaid {
+    display: flex;
+    justify-content: center;
+  }
+
+  .legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 24px;
+  }
+
+  .legend-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    border-top: 3px solid var(--muted);
+  }
+
+  .legend-card.semantic  { border-top-color: var(--cyan); }
+  .legend-card.episodic  { border-top-color: var(--magenta); }
+  .legend-card.procedural { border-top-color: var(--green); }
+  .legend-card.audit     { border-top-color: var(--orange); }
+
+  .legend-card h3 {
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+  }
+
+  .legend-card.semantic h3  { color: var(--cyan); }
+  .legend-card.episodic h3  { color: var(--magenta); }
+  .legend-card.procedural h3 { color: var(--green); }
+  .legend-card.audit h3     { color: var(--orange); }
+
+  .legend-card p {
+    font-size: 0.75rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .legend-card code {
+    background: var(--bg-card);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    color: var(--text);
+  }
+
+  .storage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 24px;
+  }
+
+  .storage-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+
+  .storage-card h3 {
+    font-size: 0.85rem;
+    color: var(--purple);
+    margin-bottom: 8px;
+  }
+
+  .storage-card p {
+    font-size: 0.72rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .section-title {
+    font-size: 1rem;
+    color: var(--purple);
+    margin: 24px 0 12px;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+
+  .mermaid .nodeLabel {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  @media (max-width: 900px) {
+    .storage-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>G.A.I.A. MEMORY ARCHITECTURE</h1>
+<p class="subtitle">Privacy-first, local, modular — three memory types behind a single storage protocol</p>
+
+<!-- ─── Main Architecture ─── -->
+<div class="diagram-container">
+  <div class="mermaid">
+graph TB
+    subgraph TUI["🖥️ GaiaTUI App"]
+        direction TB
+        CHAT[Chat Interface]
+        MBROWSE[Memory Browser /memory]
+        AVIEW[Audit Viewer /audit]
+        TINSPECT[Tool Inspector /tools]
+    end
+
+    subgraph ORCH["⚙️ Agent Orchestrator"]
+        direction TB
+        DECIDE[Decision Pipeline]
+        CONTEXT[Context Window Mgmt]
+        PLAN[Multi-step Planner]
+    end
+
+    subgraph STORE["🗄️ MemoryStore Protocol"]
+        direction LR
+        SIFACE[semantic_insert / update / delete / search]
+        EIFACE[episodic_record / search / get_conversation / prune]
+        PIFACE[procedure_register / get / search]
+        AIFACE[audit_log]
+    end
+
+    subgraph BACKENDS["💾 Storage Backends"]
+        direction TB
+        SQLITE[SQLite + SQLCipher]
+        REDIS[Redis + RediSearch]
+        FILE[JSON/YAML Files]
+    end
+
+    TUI --> ORCH
+    ORCH --> STORE
+    STORE --> BACKENDS
+
+    DECIDE -.->|inject| CONTEXT
+
+    style TUI fill:#161b22,stroke:#21262d,color:#c9d1d9
+    style ORCH fill:#161b22,stroke:#bc8cff,color:#c9d1d9
+    style STORE fill:#161b22,stroke:#00f0ff,color:#c9d1d9
+    style BACKENDS fill:#161b22,stroke:#3fb950,color:#c9d1d9
+  </div>
+</div>
+
+<p class="section-title">— MEMORY TYPES —</p>
+
+<!-- ─── Three Memory Types ─── -->
+<div class="diagram-container">
+  <div class="mermaid">
+graph LR
+    subgraph SEM["🧠 Semantic Memory — What the user knows"]
+        direction TB
+        S1[semantic_facts]
+        S1FTS[FTS5 virtual table]
+        S1 --> S1FTS
+        S2{content}
+        S2 --> S2a[category / confidence / source]
+        S2 --> S2b[source_id / created_at / updated_at]
+        S2 --> S2c[metadata JSON]
+        S1 --> S2
+    end
+
+    subgraph EPI["📖 Episodic Memory — What happened"]
+        direction TB
+        E1[episodic_events]
+        E1FTS[FTS5 virtual table]
+        E1 --> E1FTS
+        E2{event_type / conversation_id}
+        E2 --> E2a[timestamp / summary / payload JSON]
+        E2 --> E2b[indexed_content for search]
+        E2 --> E2c[created_at for retention]
+        E1 --> E2
+        E3[event_type CHECK]
+        E3 --> E3a[conversation_start|turn|end]
+        E3 --> E3b[tool_call|tool_result|error]
+        E3 --> E3c[memory_op|config_change]
+        E3 --> E3d[mcp_connect|disconnect]
+        E2 --> E3
+    end
+
+    subgraph PROC["🔧 Procedural Memory — How to do things"]
+        direction TB
+        P1[procedure_entries]
+        P1FTS[FTS5 virtual table]
+        P1 --> P1FTS
+        P2{name / description / category}
+        P2 --> P2a[safety_level / prompt_template]
+        P2 --> P2b[steps JSON / source_file]
+        P2 --> P2c[enabled / version / metadata]
+        P1 --> P2
+    end
+
+    SEM === EPI === PROC
+
+    style SEM fill:#0d1117,stroke:#00f0ff,color:#00f0ff
+    style EPI fill:#0d1117,stroke:#ff007f,color:#ff007f
+    style PROC fill:#0d1117,stroke:#3fb950,color:#3fb950
+  </div>
+</div>
+
+<p class="section-title">— AUDIT LOG —</p>
+
+<!-- ─── Audit Log ─── -->
+<div class="diagram-container">
+  <div class="mermaid">
+graph LR
+    subgraph AUDIT["🔒 Audit Log — Append-only encrypted trail"]
+        A1[audit_log]
+        A1 --> A2{log_id / timestamp}
+        A2 --> A3[action / actor]
+        A3 --> A4[target_type / target_id]
+        A4 --> A5[detail JSON / ip / user_agent]
+        A6[Indexes: timestamp / action / target]
+        A1 --> A6
+    end
+
+    ORCH -.->|log every non-trivial action| AUDIT
+
+    style AUDIT fill:#0d1117,stroke:#d29922,color:#d29922
+  </div>
+</div>
+
+<p class="section-title">— MEMORY TYPE CHARACTERISTICS —</p>
+
+<!-- ─── Legend Cards ─── -->
+<div class="legend-grid">
+  <div class="legend-card semantic">
+    <h3>🧠 Semantic Memory</h3>
+    <p>
+      <strong>What the user knows</strong><br>
+      Facts, concepts, preferences, domain knowledge.<br>
+      Confidence scoring &amp; autodistillation.<br>
+      FTS5 full-text search on <code>content</code>.<br>
+      Source-tracked: user / agent / conversation / distillation.
+    </p>
+  </div>
+  <div class="legend-card episodic">
+    <h3>📖 Episodic Memory</h3>
+    <p>
+      <strong>What happened</strong><br>
+      Time-indexed event records. Full conversation transcripts.<br>
+      Tool calls, errors, corrections, MCP events.<br>
+      Retention policy: compress &amp; prune old episodes.<br>
+      Grouped by <code>conversation_id</code>.
+    </p>
+  </div>
+  <div class="legend-card procedural">
+    <h3>🔧 Procedural Memory</h3>
+    <p>
+      <strong>How to do things</strong><br>
+      Skills, routines, policies, prompt templates.<br>
+      YAML/JSON on disk + SQLite index.<br>
+      Safety-gated: <code>safe</code> / <code>caution</code> / <code>danger</code>.<br>
+      Hot-reloadable without restart.
+    </p>
+  </div>
+  <div class="legend-card audit">
+    <h3>🔒 Audit Log</h3>
+    <p>
+      <strong>Action trail (metadata only)</strong><br>
+      Append-only, encrypted at rest.<br>
+      Logs <em>what</em> happened, not <em>what was said</em>.<br>
+      Full content → episodic memory instead.<br>
+      Exportable as signed JSONL.
+    </p>
+  </div>
+</div>
+
+<p class="section-title">— STORAGE BACKENDS —</p>
+
+<!-- ─── Storage Cards ─── -->
+<div class="storage-grid">
+  <div class="storage-card">
+    <h3>🗃️ SQLiteMemoryStore (v1 default)</h3>
+    <p>
+      Local SQLite database. FTS5 virtual tables for full-text search.<br>
+      SQLCipher encryption when <code>encrypted: true</code>.<br>
+      ACID transactions, zero external dependencies.<br>
+      Tables: <code>semantic_facts</code>, <code>episodic_events</code>, <code>procedure_entries</code>, <code>audit_log</code>
+    </p>
+  </div>
+  <div class="storage-card">
+    <h3>☁️ RedisMemoryStore (planned v2)</h3>
+    <p>
+      In-memory with disk persistence. RediSearch for full-text.<br>
+      HNSW vector indexing for semantic similarity.<br>
+      <code>EXPIRE</code> TTL for retention policy enforcement.<br>
+      Multi-device sync via Redis Cloud or self-hosted.
+    </p>
+  </div>
+  <div class="storage-card">
+    <h3>📁 FileStore (dev / lightweight)</h3>
+    <p>
+      JSON/YAML files on disk. No database needed.<br>
+      Human-editable, git-versionable.<br>
+      FTS5 → grep/ripgrep fallback.<br>
+      Ideal for development and single-device use.
+    </p>
+  </div>
+</div>
+
+</body>
+</html>

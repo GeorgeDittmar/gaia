@@ -40,6 +40,7 @@ SLASH_COMMANDS = [
     {"cmd": "/remember", "desc": "Store a fact in semantic memory"},
     {"cmd": "/exit", "desc": "Exit the application"},
     {"cmd": "/close", "desc": "Exit the application"},
+    {"cmd": "/extract", "desc": "Auto-extract facts from recent conversation history"},
 ]
 
 

@@ -47,6 +47,12 @@ def _fts_query(query: str) -> str:
     tokens = query.split()
     fixed: list[str] = []
     for token in tokens:
+        if token.endswith("?"):
+            # Strip trailing question mark (FTS5 query operator)
+            token = token[:-1].rstrip()
+            if not token:
+                continue
+            # Fall through to further checks on the stripped token
         if "'" in token:
             # Apostrophe → space splits into multiple boolean terms
             fixed.extend(token.replace("'", " ").split())
@@ -94,16 +100,7 @@ class SQLiteMemoryStore(MemoryStore):
         conn = self._conn  # type: ignore [union-attr]
 
         conn.executescript("""
-            DROP TABLE IF EXISTS semantic_facts;
-            DROP TABLE IF EXISTS semantic_facts_fts;
-            DROP TABLE IF EXISTS episodic_events;
-            DROP TABLE IF EXISTS episodic_events_fts;
-            DROP TABLE IF EXISTS procedure_entries;
-            DROP TABLE IF EXISTS procedure_entries_fts;
-            DROP TABLE IF EXISTS audit_log;
-
-            /* ── Semantic facts ── */
-            CREATE TABLE semantic_facts (
+            CREATE TABLE IF NOT EXISTS semantic_facts (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 fact_id     TEXT NOT NULL UNIQUE,
                 content     TEXT NOT NULL,
@@ -117,16 +114,16 @@ class SQLiteMemoryStore(MemoryStore):
                 metadata    TEXT
             );
 
-            CREATE VIRTUAL TABLE semantic_facts_fts USING fts5(
+            CREATE VIRTUAL TABLE IF NOT EXISTS semantic_facts_fts USING fts5(
                 content,
                 category
             );
 
-            CREATE INDEX idx_semantic_updated ON semantic_facts(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_semantic_updated ON semantic_facts(updated_at DESC);
 
 
             /* ── Episodic events ── */
-            CREATE TABLE episodic_events (
+            CREATE TABLE IF NOT EXISTS episodic_events (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id        TEXT NOT NULL UNIQUE,
                 event_type      TEXT NOT NULL CHECK(event_type IN (
@@ -143,18 +140,18 @@ class SQLiteMemoryStore(MemoryStore):
                 indexed_content TEXT
             );
 
-            CREATE VIRTUAL TABLE episodic_events_fts USING fts5(
+            CREATE VIRTUAL TABLE IF NOT EXISTS episodic_events_fts USING fts5(
                 indexed_content,
                 event_type
             );
 
-            CREATE INDEX idx_episodic_conversation ON episodic_events(conversation_id);
-            CREATE INDEX idx_episodic_timestamp ON episodic_events(timestamp DESC);
-            CREATE INDEX idx_episodic_created ON episodic_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_episodic_conversation ON episodic_events(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_episodic_timestamp ON episodic_events(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_events(created_at);
 
 
             /* ── Procedure entries ── */
-            CREATE TABLE procedure_entries (
+            CREATE TABLE IF NOT EXISTS procedure_entries (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 procedure_id    TEXT NOT NULL UNIQUE,
                 name            TEXT NOT NULL,
@@ -171,18 +168,18 @@ class SQLiteMemoryStore(MemoryStore):
                 metadata        TEXT
             );
 
-            CREATE VIRTUAL TABLE procedure_entries_fts USING fts5(
+            CREATE VIRTUAL TABLE IF NOT EXISTS procedure_entries_fts USING fts5(
                 name,
                 description,
                 category
             );
 
-            CREATE INDEX idx_proc_category ON procedure_entries(category);
-            CREATE INDEX idx_proc_enabled ON procedure_entries(enabled);
+            CREATE INDEX IF NOT EXISTS idx_proc_category ON procedure_entries(category);
+            CREATE INDEX IF NOT EXISTS idx_proc_enabled ON procedure_entries(enabled);
 
 
             /* ── Audit log ── */
-            CREATE TABLE audit_log (
+            CREATE TABLE IF NOT EXISTS audit_log (
                 log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp   TEXT NOT NULL,
                 action      TEXT NOT NULL,
@@ -194,9 +191,9 @@ class SQLiteMemoryStore(MemoryStore):
                 user_agent  TEXT
             );
 
-            CREATE INDEX idx_audit_timestamp ON audit_log(timestamp DESC);
-            CREATE INDEX idx_audit_action ON audit_log(action);
-            CREATE INDEX idx_audit_target ON audit_log(target_type, target_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type, target_id);
         """)
 
     async def close(self) -> None:
@@ -281,7 +278,12 @@ class SQLiteMemoryStore(MemoryStore):
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
         """Search semantic facts by full-text query.
 
-        Returns rows ordered by BM25 relevance score.
+        Uses FTS5 BM25 ranking for relevance. When the query consists
+        entirely of FTS5 stopwords (e.g. ``"what is my name?"``), the
+        MATCH returns zero rows. In that case we fall back to a
+        keyword-match across all facts.
+
+        Returns rows ordered by relevance.
         """
         conn = self._conn  # type: ignore [union-attr]
         fts_query = _fts_query(query)
@@ -294,7 +296,33 @@ class SQLiteMemoryStore(MemoryStore):
                LIMIT ?""",
             (fts_query, limit),
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        if rows:
+            return rows
+
+        # Fallback: keyword-match against all facts when FTS5 returns
+        # nothing (typically because the query is all stopwords like
+        # "what is my name?" or "who am I?").
+        # Strip trailing ? from each token (FTS5 query operator).
+        keywords = [
+            t.lower().rstrip("?").rstrip("'")
+            for t in query.split()
+        ]
+        keywords = [t for t in keywords if t]
+        if not keywords:
+            return []
+
+        all_facts = conn.execute(
+            "SELECT * FROM semantic_facts LIMIT 500"
+        ).fetchall()
+        scored: list[tuple[int, dict]] = []
+        for row in all_facts:
+            text = row["content"].lower()
+            score = sum(1 for kw in keywords if kw in text)
+            if score:
+                scored.append((score, dict(row)))
+        scored.sort(key=lambda x: (-x[0], x[1].get("created_at", "")))
+        return scored[:limit]
 
     # ── Episodic operations ──────────────────────────────────────
 

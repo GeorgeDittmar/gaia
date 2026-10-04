@@ -580,6 +580,39 @@ class GaiaTUIApp(App):
                         )
                     )
 
+            case "extract":
+                if self._memory is not None and self.__core_agent is not None:
+                    status_turn = ChatTurn(
+                        "[bold #00f0ff]Extracting facts...[/bold #00f0ff]",
+                        classes="agent-msg",
+                        id="extract-status",
+                    )
+                    await chat_box.mount(status_turn)
+                    chat_box.scroll_end()
+
+                    count = await self.__core_agent.extract_from_history(
+                        max_turns=10,
+                    )
+                    await chat_box.remove_children(
+                        predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-status"
+                    )
+                    await chat_box.mount(
+                        ChatTurn(
+                            f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
+                            f"[bold]{count}[/bold] facts extracted from recent history.",
+                            classes="agent-msg",
+                            id="extract-status",
+                        )
+                    )
+                else:
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
+                            "Memory store is not initialized.",
+                            classes="agent-msg",
+                        )
+                    )
+
             case _:
                 await chat_box.mount(
                     ChatTurn(
@@ -648,3 +681,13 @@ class GaiaTUIApp(App):
 
         agent_widget.update(base_prefix + response_accumulator)
         chat_box.scroll_end()
+
+        # 5. Background fact extraction (never blocks response)
+        if self._memory is not None:
+            self.call_later(0, self._start_fact_extraction, prompt, response_accumulator)
+
+    def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
+        """Launch post-turn fact extraction as a background task."""
+        asyncio.create_task(
+            self.__core_agent.post_turn_extract(user_prompt, agent_response)
+        )

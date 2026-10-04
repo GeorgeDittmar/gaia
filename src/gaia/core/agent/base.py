@@ -18,6 +18,19 @@ from pydantic_ai.providers.openai import OpenAIProvider
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
 
+# Auto-classification keywords for extracted facts
+_PREFERENCE_KEYWORDS = frozenset([
+    "name", "location", "lives", "born", "from", "job", "role",
+    "title", "prefers", "likes", "hates", "dislikes", "city",
+    "state", "country", "age", "gender", "pronoun", "email",
+])
+_PROJECT_KEYWORDS = frozenset([
+    "project", "repo", "code", "bug", "feature", "task",
+    "working on", "building", "coding", "pr", "debug", "issue",
+    "github", "gitlab", "branch", "deploy", "pipeline", "ci",
+    "cd", "docker", "kubernetes", "infra", "infrastructure",
+])
+
 
 def _generate_conversation_id() -> str:
     """Return a short UUID for grouping conversation turns."""
@@ -130,3 +143,164 @@ class Gaia:
             except Exception:
                 # Memory recording is best-effort; never block the response
                 pass
+
+    # ── Post-turn fact extraction ──────────────────────────────────────
+
+    async def post_turn_extract(self, user_prompt: str, agent_response: str) -> int:
+        """Extract facts from a completed conversation turn and save to semantic memory.
+
+        Makes a lightweight LLM call to extract facts as JSON, auto-classifies them,
+        and saves them. Returns the number of facts saved. Never raises — failures are
+        silently ignored.
+
+        Args:
+            user_prompt: The user's message this turn.
+            agent_response: The agent's full response this turn.
+
+        Returns:
+            Number of facts saved to semantic memory.
+        """
+        if self._memory is None:
+            return 0
+
+        try:
+            facts = await self._extract_facts_json(user_prompt, agent_response)
+            if not facts:
+                return 0
+
+            saved = 0
+            for fact_text, category, confidence in facts:
+                await self._memory.semantic_insert(
+                    content=fact_text,
+                    category=category,
+                    confidence=confidence,
+                    source="auto_extract",
+                )
+                saved += 1
+            return saved
+        except Exception:
+            return 0
+
+    async def _extract_facts_json(
+        self, user_prompt: str, agent_response: str
+    ) -> list[tuple[str, str, float]]:
+        """Call the LLM to extract facts as a JSON array.
+
+        The LLM response should be a JSON array of objects:
+        [{"text": "...", "confidence": 0.9}, ...]
+
+        Returns:
+            List of (fact_text, category, confidence) tuples.
+        """
+        prompt = (
+            "Extract any factual statements about the user from this conversation.\n"
+            "Respond with ONLY a JSON array. No explanations, no markdown, no code blocks.\n"
+            "Each entry must have 'text' (the fact as a complete sentence) and "
+            "'confidence' (a float 0.0–1.0).\n\n"
+            "Example:\n"
+            '[{"text": "George lives in Portland, Oregon.", "confidence": 0.9}]\n\n'
+            "Conversation:\n"
+            f"User: {user_prompt[:500]}\n"
+            f"Agent: {agent_response[:500]}"
+        )
+
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            base_url=self.DEFAULT_ENDPOINT,
+            api_key="not-needed",
+        )
+
+        resp = await client.chat.completions.create(
+            model="local-model",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a fact extraction engine. Output ONLY valid JSON arrays.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=512,
+            temperature=0.0,
+        )
+
+        raw = resp.choices[0].message.content or ""
+        parsed = self._parse_facts_json(raw)
+        return [
+            (p["text"], self._classify_fact(p["text"]), p.get("confidence", 0.8))
+            for p in parsed
+            if p.get("text")
+        ]
+
+    @staticmethod
+    def _parse_facts_json(raw: str) -> list[dict]:
+        """Parse a JSON array from the LLM response.
+
+        Strips markdown code fences if present. Returns an empty list on failure.
+        """
+        import json
+
+        text = raw.strip()
+        # Strip ```json ... ``` or ``` ... ``` fences
+        if text.startswith("```"):
+            lines = text.splitlines()
+            # Remove first line (```json) and last line (```)
+            if len(lines) >= 2 and lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            elif len(lines) > 1:
+                lines = lines[1:]
+            text = "\n".join(lines).strip()
+
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return data
+            return []
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    @staticmethod
+    def _classify_fact(fact_text: str) -> str:
+        """Auto-classify a fact as 'preference', 'project', or 'general'."""
+        lower = fact_text.lower()
+        for kw in _PROJECT_KEYWORDS:
+            if kw in lower:
+                return "project"
+        for kw in _PREFERENCE_KEYWORDS:
+            if kw in lower:
+                return "preference"
+        return "general"
+
+    async def extract_from_history(self, max_turns: int = 10) -> int:
+        """Re-process the last N conversation turns from episodic memory.
+
+        Queries episodic memory for the most recent turns, extracts facts from
+        user_prompt + agent_response pairs, and saves them.
+
+        Args:
+            max_turns: Maximum number of conversation turns to process.
+
+        Returns:
+            Total number of facts saved across all processed turns.
+        """
+        if self._memory is None:
+            return 0
+
+        try:
+            results = await self._memory.episodic_search(
+                query="conversation turn",
+                limit=max_turns,
+            )
+        except Exception:
+            return 0
+
+        total_saved = 0
+        for entry in results:
+            payload = entry.get("payload", {})
+            user_prompt = payload.get("user_prompt", "")
+            agent_response = payload.get("agent_response", "")
+            if user_prompt and agent_response:
+                saved = await self.post_turn_extract(user_prompt, agent_response)
+                total_saved += saved
+
+        return total_saved
