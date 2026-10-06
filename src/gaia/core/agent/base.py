@@ -7,12 +7,16 @@ episodic logging so every conversation turn is persisted.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
-from pydantic_ai.agent import Agent
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent, ModelRetry
+from pydantic_ai.agent import RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -32,10 +36,65 @@ _PROJECT_KEYWORDS = frozenset([
     "cd", "docker", "kubernetes", "infra", "infrastructure",
 ])
 
+logger = logging.getLogger("gaia.extract")
+
 
 def _generate_conversation_id() -> str:
     """Return a short UUID for grouping conversation turns."""
     return str(uuid.uuid4())[:12]
+
+
+# ── Structured output types ──────────────────────────────────────────
+
+class FactEntry(BaseModel):
+    """A single fact extracted from conversation context."""
+    text: str = Field(description="The fact as a complete declarative sentence")
+    confidence: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="How confident we are this is a real fact (0.0-1.0)",
+    )
+
+
+class FactResult(BaseModel):
+    """Structured LLM result: a list of extracted facts."""
+    facts: list[FactEntry]
+
+
+# ── Extraction agent (reusable, structured output) ─────────────────
+
+def _make_extraction_agent() -> Agent[FactResult]:
+    """Build a dedicated pydantic-ai agent with structured output for fact extraction.
+
+    Uses pydantic-ai's result_type so the LLM is **forced** to return a FactResult.
+    If the model returns malformed output, pydantic-ai will retry automatically
+    with a ModelRetry instruction.
+    """
+    model = OpenAIChatModel(
+        "local-model",
+        provider=OpenAIProvider(
+            base_url="http://localhost:8080/v1",
+            api_key="not-needed",
+        ),
+    )
+    return Agent(
+        model,
+        instructions=(
+            "You extract factual statements about the USER from the conversation below.\n"
+            "Return ONLY facts the user has stated or strongly implied about themselves:\n"
+            "  - Preferences (what they like/dislike)\n"
+            "  - Personal info (name, location, job, etc.)\n"
+            "  - Project details (what they're building, tech stack, bugs)\n\n"
+            "Rules:\n"
+            "  - Each fact must be a complete declarative sentence about the user\n"
+            "  - Skip greetings, pleasantries, or conversational filler\n"
+            "  - Skip facts that are obvious or generic\n"
+            "  - If nothing extractable is found, return an empty facts list\n"
+            "  - Set confidence high (0.8-1.0) for explicit statements, lower (0.5-0.7) for inferred\n"
+        ),
+        output_type=FactResult,
+    )
 
 
 class Gaia:
@@ -75,6 +134,8 @@ class Gaia:
         self.__message_hist: list[dict] = []
         self._memory = memory
         self.__conv_id = _generate_conversation_id()
+        # Cached extraction agent (same model, structured output)
+        self.__extraction_agent = _make_extraction_agent()
 
     # ── Public API ─────────────────────────────────────────────────
 
@@ -147,120 +208,77 @@ class Gaia:
 
     # ── Post-turn fact extraction ──────────────────────────────────────
 
-    async def post_turn_extract(self, user_prompt: str, agent_response: str) -> int:
+    async def post_turn_extract(
+        self, user_prompt: str, agent_response: str
+    ) -> int:
         """Extract facts from a completed conversation turn and save to semantic memory.
 
-        Makes a lightweight LLM call to extract facts as JSON, auto-classifies them,
-        and saves them. Returns the number of facts saved. Never raises — failures are
-        silently ignored.
+        Uses a dedicated pydantic-ai agent with structured output (result_type=FactResult)
+        so the LLM is contractually required to return a valid FactResult.
 
-        Args:
-            user_prompt: The user's message this turn.
-            agent_response: The agent's full response this turn.
-
-        Returns:
-            Number of facts saved to semantic memory.
+        Returns the number of facts actually saved. Never raises.
         """
         if self._memory is None:
+            logger.info("SKIPPED — no memory store")
             return 0
 
+        logger.info("start — prompt=%s", user_prompt[:80])
         try:
-            facts = await self._extract_facts_json(user_prompt, agent_response)
+            facts = await self._extract_facts(user_prompt, agent_response)
+            logger.info("extracted %d facts", len(facts))
             if not facts:
                 return 0
 
             saved = 0
             for fact_text, category, confidence in facts:
-                await self._memory.semantic_insert(
-                    content=fact_text,
-                    category=category,
-                    confidence=confidence,
-                    source="auto_extract",
-                )
-                saved += 1
+                try:
+                    await self._memory.semantic_insert(
+                        content=fact_text,
+                        category=category,
+                        confidence=confidence,
+                        source="auto_extract",
+                    )
+                    saved += 1
+                    logger.info("saved fact [%s] %s", category, fact_text[:80])
+                except Exception:
+                    logger.exception("INSERT FAILED — %s", fact_text[:80])
+            logger.info("saved %d/%d facts", saved, len(facts))
             return saved
         except Exception:
+            logger.exception("extraction FAILED")
             return 0
 
-    async def _extract_facts_json(
-        self, user_prompt: str, agent_response: str
+    async def _extract_facts(
+        self,
+        user_prompt: str,
+        agent_response: str,
     ) -> list[tuple[str, str, float]]:
-        """Call the LLM to extract facts as a JSON array.
+        """Run the extraction agent with structured output.
 
-        The LLM response should be a JSON array of objects:
-        [{"text": "...", "confidence": 0.9}, ...]
+        pydantic-ai's result_type=FactResult forces the LLM to return a
+        FactResult object. If the model's raw output doesn't match,
+        pydantic-ai raises ModelRetry and retries automatically (up to 3 times).
 
-        Returns:
-            List of (fact_text, category, confidence) tuples.
+        Returns list of (fact_text, category, confidence) tuples.
         """
-        prompt = (
-            "Extract any factual statements about the user from this conversation.\n"
-            "Respond with ONLY a JSON array. No explanations, no markdown, no code blocks.\n"
-            "Each entry must have 'text' (the fact as a complete sentence) and "
-            "'confidence' (a float 0.0–1.0).\n\n"
-            "Example:\n"
-            '[{"text": "George lives in Portland, Oregon.", "confidence": 0.9}]\n\n'
-            "Conversation:\n"
-            f"User: {user_prompt[:500]}\n"
-            f"Agent: {agent_response[:500]}"
-        )
-
         # Brief delay to avoid competing with the main streaming API call
         await asyncio.sleep(2)
 
-        client = AsyncOpenAI(
-            base_url=self.DEFAULT_ENDPOINT,
-            api_key="not-needed",
-            timeout=60.0,
+        conversation = (
+            f"User: {user_prompt[:800]}\n"
+            f"Agent: {agent_response[:800]}"
         )
 
-        resp = await client.chat.completions.create(
-            model="local-model",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a fact extraction engine. Output ONLY valid JSON arrays.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=512,
-            temperature=0.0,
-        )
+        logger.debug("calling extraction agent (%d chars of conversation)", len(conversation))
+        result = await self.__extraction_agent.run(conversation)
+        fact_result: FactResult = result.output
 
-        raw = resp.choices[0].message.content or ""
-        parsed = self._parse_facts_json(raw)
+        logger.debug("agent returned %d fact entries", len(fact_result.facts))
         return [
-            (p["text"], self._classify_fact(p["text"]), p.get("confidence", 0.8))
-            for p in parsed
-            if p.get("text")
+            (f.text, self._classify_fact(f.text), f.confidence)
+            for f in fact_result.facts
+            if f.text.strip()
         ]
-
-    @staticmethod
-    def _parse_facts_json(raw: str) -> list[dict]:
-        """Parse a JSON array from the LLM response.
-
-        Strips markdown code fences if present. Returns an empty list on failure.
-        """
-        import json
-
-        text = raw.strip()
-        # Strip ```json ... ``` or ``` ... ``` fences
-        if text.startswith("```"):
-            lines = text.splitlines()
-            # Remove first line (```json) and last line (```)
-            if len(lines) >= 2 and lines[-1].strip() == "```":
-                lines = lines[1:-1]
-            elif len(lines) > 1:
-                lines = lines[1:]
-            text = "\n".join(lines).strip()
-
-        try:
-            data = json.loads(text)
-            if isinstance(data, list):
-                return data
-            return []
-        except (json.JSONDecodeError, ValueError):
-            return []
 
     @staticmethod
     def _classify_fact(fact_text: str) -> str:
@@ -299,7 +317,14 @@ class Gaia:
 
         total_saved = 0
         for entry in results:
-            payload = entry.get("payload", {})
+            raw_payload = entry.get("payload", {})
+            if isinstance(raw_payload, str):
+                try:
+                    payload = json.loads(raw_payload)
+                except (json.JSONDecodeError, ValueError):
+                    payload = {}
+            else:
+                payload = raw_payload
             user_prompt = payload.get("user_prompt", "")
             agent_response = payload.get("agent_response", "")
             if user_prompt and agent_response:

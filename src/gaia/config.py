@@ -41,6 +41,7 @@ SLASH_COMMANDS = [
     {"cmd": "/exit", "desc": "Exit the application"},
     {"cmd": "/close", "desc": "Exit the application"},
     {"cmd": "/extract", "desc": "Auto-extract facts from recent conversation history"},
+    {"cmd": "/extract-debug", "desc": "Extract facts and show raw LLM output in chat"},
 ]
 
 
