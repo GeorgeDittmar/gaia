@@ -53,6 +53,7 @@ class GaiaTUIApp(App):
     """G.A.I.A. Dark Cyberpunk Terminal UI."""
 
     connection_status = reactive("CHECKING...")
+    _debug_mode = False
 
     CSS = """
     Screen {
@@ -542,6 +543,36 @@ class GaiaTUIApp(App):
                     )
                 )
 
+            case "debug":
+                if arg.lower() == "on":
+                    self._debug_mode = True
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Debug:[/bold #ff007f] "
+                            "[bold #00f0ff]ON[/bold #00f0ff] — extraction status "
+                            "will appear in chat",
+                            classes="agent-msg",
+                        )
+                    )
+                elif arg.lower() == "off":
+                    self._debug_mode = False
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Debug:[/bold #ff007f] "
+                            "[bold #ff007f]OFF[/bold #ff007f] — extraction status hidden",
+                            classes="agent-msg",
+                        )
+                    )
+                else:
+                    state = "ON" if self._debug_mode else "OFF"
+                    await chat_box.mount(
+                        ChatTurn(
+                            f"[bold #ff007f]Debug:[/bold #ff007f] {state} — "
+                            "usage: [bold]/debug on[/bold] or [bold]/debug off[/bold]",
+                            classes="agent-msg",
+                        )
+                    )
+
             case "status":
                 status_info = (
                     "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
@@ -785,7 +816,7 @@ class GaiaTUIApp(App):
     async def _run_extraction(
         self, user_prompt: str, agent_response: str
     ) -> None:
-        """Run extraction and always show result in chat."""
+        """Run extraction and show result in chat only if debug mode is on."""
         logger.info("extraction running")
         try:
             count = await self.__core_agent.post_turn_extract(
@@ -797,7 +828,9 @@ class GaiaTUIApp(App):
             logger.exception("extraction task failed")
 
     def _do_mount_extraction_status(self, count: int) -> None:
-        """Show a persistent message in the chat after extraction."""
+        """Show a persistent message in the chat after extraction — only when debug is on."""
+        if not self._debug_mode:
+            return
         try:
             chat_box = self.query_one("#chat-container", ScrollableContainer)
             if count > 0:
