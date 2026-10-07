@@ -9,6 +9,7 @@ from gaia.config import (
     is_slash_input,
     check_endpoint,
     EXIT_COMMANDS,
+    SLASH_COMMANDS,
 )
 from gaia.gaia_tui_app import GaiaTUIApp
 
@@ -176,6 +177,27 @@ class TestGaiaTUIAppInit:
         assert "ctrl+l" in commands
         assert "f1" in commands
 
+    def test_init_memory_creates_store(self) -> None:
+        """_init_memory creates and initializes a store when memory_db is set."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            with patch(
+                "gaia.gaia_tui_app.load_config",
+                return_value={"model": "test", "memory_db": str(db_path)},
+            ):
+                with patch("gaia.gaia_tui_app.Gaia"):
+                    app = GaiaTUIApp()
+
+            assert app._memory is not None
+            assert app._memory._db_path == db_path.resolve()
+        finally:
+            db_path.unlink(missing_ok=True)
+
 
 class TestForceExit:
     """Tests for GaiaTUIApp.force_exit()."""
@@ -207,3 +229,78 @@ class TestForceExit:
             app.force_exit()
 
         app.exit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_exit_closes_memory(self) -> None:
+        """force_exit calls _close_memory when memory is present."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app = GaiaTUIApp()
+            mock_store = AsyncMock()
+            app._memory = mock_store
+            app.exit = MagicMock()
+            app.force_exit()
+
+            # create_task schedules but doesn't run immediately; await it
+            task = getattr(app, "_GaiaTUIApp__close_task", None)
+            if task is not None:
+                await task
+            mock_store.close.assert_awaited_once()
+
+
+class TestRememberCommand:
+    """Tests for the /remember slash command."""
+
+    def _make_app_and_chatbox(self, memory=None):
+        """Create a GaiaTUIApp with mocked memory and chat_box."""
+        app = GaiaTUIApp()
+        app._memory = AsyncMock() if memory is False else memory
+        chat_box = MagicMock()
+        chat_box.mount = AsyncMock()  # mount is an async operation
+        app.query_one = MagicMock(
+            side_effect=lambda sel, cls: chat_box if sel == "#chat-container" else MagicMock()
+        )
+        app.query = MagicMock(return_value=[])
+        return app, chat_box
+
+    @pytest.mark.asyncio
+    async def test_remember_inserts_fact(self) -> None:
+        """/remember <fact> calls semantic_insert with correct args."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
+
+            await app.handle_slash_command("/remember user likes python")
+
+            app._memory.semantic_insert.assert_awaited_once_with(
+                content="user likes python",
+                category="preference",
+                confidence=1.0,
+                source="user",
+            )
+            chat_box.mount.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_remember_no_arg_shows_usage(self) -> None:
+        """/remember without an arg shows usage help."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
+
+            await app.handle_slash_command("/remember")
+
+            app._memory.semantic_insert.assert_not_called()
+            chat_box.mount.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remember_without_memory_shows_message(self) -> None:
+        """/remember when _memory is None does not raise."""
+        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+            app, chat_box = self._make_app_and_chatbox(memory=None)
+
+            await app.handle_slash_command("/remember test fact")
+
+            chat_box.mount.assert_called_once()
+
+    def test_remember_in_slash_commands_list(self) -> None:
+        """/remember is listed in SLASH_COMMANDS for autocomplete."""
+        cmd_names = {entry["cmd"] for entry in SLASH_COMMANDS}
+        assert "/remember" in cmd_names, "Missing /remember from SLASH_COMMANDS"
+

@@ -10,6 +10,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
     "endpoint": "http://localhost:11434",
     "encrypted": True,
+    "memory_db": "gaia-memory.db",
+    "memory": {
+        "backend": "sqlite",  # "sqlite" or "chroma"
+    },
     "system_prompt": (
         "You are G.A.I.A., an advanced, secure local AI agent. "
         "Provide clear, direct, and technically rigorous assistance. "
@@ -33,8 +37,12 @@ SLASH_COMMANDS = [
     {"cmd": "/clear", "desc": "Clear terminal chat buffer"},
     {"cmd": "/status", "desc": "Display active runtime diagnostics"},
     {"cmd": "/help", "desc": "Show interactive keybindings & commands overlay"},
+    {"cmd": "/remember", "desc": "Store a fact in semantic memory"},
     {"cmd": "/exit", "desc": "Exit the application"},
     {"cmd": "/close", "desc": "Exit the application"},
+    {"cmd": "/extract", "desc": "Auto-extract facts from recent conversation history"},
+    {"cmd": "/extract-debug", "desc": "Extract facts and show raw LLM output in chat"},
+    {"cmd": "/debug", "desc": "Toggle debug mode (on/off) — controls whether extraction status shows in chat"},
 ]
 
 
@@ -98,6 +106,7 @@ async def check_endpoint(endpoint: str, timeout: float = 1.5) -> str:
     so it can be unit-tested by patching ``urllib.request.urlopen``.
     """
     import asyncio
+    import urllib.error
     import urllib.request
 
     req = urllib.request.Request(
@@ -113,6 +122,12 @@ async def check_endpoint(endpoint: str, timeout: float = 1.5) -> str:
     try:
         code = await loop.run_in_executor(None, _ping)
         if 200 <= code < 400:
+            return "ONLINE"
+        return f"HTTP {code}"
+    except urllib.error.HTTPError as e:
+        # urllib raises HTTPError for 4xx/5xx — server is alive
+        code = e.code
+        if 200 <= code < 500:
             return "ONLINE"
         return f"HTTP {code}"
     except Exception:
