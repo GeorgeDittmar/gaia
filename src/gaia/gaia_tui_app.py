@@ -27,17 +27,38 @@ from gaia.command_input import CommandInput
 from gaia.help_modal import HelpModal
 from gaia.settings_modal import SettingsModal
 
+from datetime import datetime
+
 logger = logging.getLogger("gaia.tui")
 
-# Configure root logging so gaia.* loggers output to stderr
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-        force=True,
+SETTINGS_FILE = Path("settings.json")
+
+
+def _setup_logging() -> None:
+    """Configure file-based logging with a session timestamped log file."""
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / f"gaia-{ts}.log"
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(name)-20s] %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
     )
 
-SETTINGS_FILE = Path("settings.json")
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setFormatter(formatter)
+    fh.setLevel(logging.DEBUG)
+
+    # Attach to root logger so gaia.* loggers inherit it
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler):
+            root.removeHandler(h)
+    root.addHandler(fh)
+    root.setLevel(logging.DEBUG)
+
+    logger.debug("Logging to %s", log_file)
 
 
 class ChatTurn(Static):
@@ -223,6 +244,8 @@ class GaiaTUIApp(App):
 
     def __init__(self):
         super().__init__()
+        _setup_logging()
+        logger.info("GaiaTUIApp starting up")
         self.settings = load_config()
         self._memory = self._init_memory()
         self.__core_agent = Gaia(
