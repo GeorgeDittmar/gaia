@@ -6,6 +6,5 @@ procedural types, all accessed through a single storage protocol.
 
 from gaia.core.memory.base import MemoryStore
 from gaia.core.memory.chroma_store import ChromaMemoryStore
-from gaia.core.memory.sqlite_store import SQLiteMemoryStore
 
-__all__ = ["MemoryStore", "SQLiteMemoryStore", "ChromaMemoryStore"]
+__all__ = ["MemoryStore", "ChromaMemoryStore"]

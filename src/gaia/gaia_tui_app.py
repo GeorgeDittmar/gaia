@@ -15,7 +15,7 @@ from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
 
 from gaia.core.agent import Gaia
-from gaia.core.memory import ChromaMemoryStore, SQLiteMemoryStore
+from gaia.core.memory import ChromaMemoryStore
 from gaia.config import (
     DEFAULT_SETTINGS,
     load_config,
@@ -254,11 +254,11 @@ class GaiaTUIApp(App):
         )
         self.is_shutting_down = False
 
-    def _init_memory(self) -> "SQLiteMemoryStore | ChromaMemoryStore | None":
+    def _init_memory(self) -> "ChromaMemoryStore | None":
         """Create a MemoryStore based on the configured backend.
 
-        Reads ``memory.backend`` from settings (``"sqlite"`` or ``"chroma"``).
-        Falls back to ``"sqlite"`` if unset or invalid.  Uses
+        Reads ``memory.backend`` from settings (``"chroma"``).
+        Falls back to ``None`` (no memory) if unset or invalid.  Uses
         ``asyncio.run()`` for the one-shot ``initialize()`` call since no
         event loop exists in ``__init__``.
         """
@@ -267,10 +267,6 @@ class GaiaTUIApp(App):
             match backend:
                 case "chroma":
                     store = ChromaMemoryStore()
-                case "sqlite":
-                    db_path = self.settings.get("memory_db", "gaia-memory.db")
-                    encrypted = self.settings.get("encrypted", False)
-                    store = SQLiteMemoryStore(db_path, encrypted=encrypted)
                 case _:
                     return None
 

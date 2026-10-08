@@ -177,26 +177,31 @@ class TestGaiaTUIAppInit:
         assert "ctrl+l" in commands
         assert "f1" in commands
 
-    def test_init_memory_creates_store(self) -> None:
-        """_init_memory creates and initializes a store when memory_db is set."""
-        import tempfile
-        from pathlib import Path
+    def test_init_memory_returns_none_for_unknown_backend(self) -> None:
+        """_init_memory returns None when memory backend is unknown."""
+        with patch(
+            "gaia.gaia_tui_app.load_config",
+            return_value={"model": "test", "memory": {"backend": "sqlite"}},
+        ):
+            with patch("gaia.gaia_tui_app.Gaia"):
+                app = GaiaTUIApp()
 
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = Path(f.name)
+        assert app._memory is None
 
-        try:
-            with patch(
-                "gaia.gaia_tui_app.load_config",
-                return_value={"model": "test", "memory_db": str(db_path)},
-            ):
-                with patch("gaia.gaia_tui_app.Gaia"):
+    def test_init_memory_returns_none_when_init_fails(self) -> None:
+        """_init_memory degrades gracefully when store initialization raises."""
+        with patch(
+            "gaia.gaia_tui_app.load_config",
+            return_value={"model": "test", "memory": {"backend": "chroma"}},
+        ):
+            with patch("gaia.gaia_tui_app.Gaia"):
+                with patch(
+                    "gaia.gaia_tui_app.ChromaMemoryStore"
+                ) as MockStore:
+                    MockStore.side_effect = Exception("init failed")
                     app = GaiaTUIApp()
 
-            assert app._memory is not None
-            assert app._memory._db_path == db_path.resolve()
-        finally:
-            db_path.unlink(missing_ok=True)
+        assert app._memory is None
 
 
 class TestForceExit:
