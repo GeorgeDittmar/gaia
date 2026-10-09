@@ -209,7 +209,10 @@ class TestForceExit:
 
     def test_sets_shutting_down_flag(self) -> None:
         """force_exit sets is_shutting_down = True."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+        ):
             app = GaiaTUIApp()
             app.force_exit()
 
@@ -219,6 +222,7 @@ class TestForceExit:
         """force_exit calls cancel_all on the workers manager."""
         with (
             patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
             patch.object(GaiaTUIApp, "workers") as mock_workers,
         ):
             app = GaiaTUIApp()
@@ -228,7 +232,10 @@ class TestForceExit:
 
     def test_calls_exit(self) -> None:
         """force_exit calls App.exit()."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+        ):
             app = GaiaTUIApp()
             app.exit = MagicMock()
             app.force_exit()
@@ -238,7 +245,10 @@ class TestForceExit:
     @pytest.mark.asyncio
     async def test_force_exit_closes_memory(self) -> None:
         """force_exit calls _close_memory when memory is present."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+        ):
             app = GaiaTUIApp()
             mock_store = AsyncMock()
             app._memory = mock_store
@@ -257,7 +267,8 @@ class TestRememberCommand:
 
     def _make_app_and_chatbox(self, memory=None):
         """Create a GaiaTUIApp with mocked memory and chat_box."""
-        app = GaiaTUIApp()
+        with patch.object(GaiaTUIApp, "_init_memory", return_value=None):
+            app = GaiaTUIApp()
         app._memory = AsyncMock() if memory is False else memory
         chat_box = MagicMock()
         chat_box.mount = AsyncMock()  # mount is an async operation

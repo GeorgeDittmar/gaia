@@ -15,7 +15,7 @@ from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
 
 from gaia.core.agent import Gaia
-from gaia.core.memory import ChromaMemoryStore
+from gaia.core.memory import ChromaMemoryStore, FileMemoryStore
 from gaia.config import (
     DEFAULT_SETTINGS,
     load_config,
@@ -254,17 +254,20 @@ class GaiaTUIApp(App):
         )
         self.is_shutting_down = False
 
-    def _init_memory(self) -> "ChromaMemoryStore | None":
+    def _init_memory(self) -> "FileMemoryStore | ChromaMemoryStore | None":
         """Create a MemoryStore based on the configured backend.
 
-        Reads ``memory.backend`` from settings (``"chroma"``).
+        Reads ``memory.backend`` from settings (``"file"`` or ``"chroma"``).
         Falls back to ``None`` (no memory) if unset or invalid.  Uses
         ``asyncio.run()`` for the one-shot ``initialize()`` call since no
         event loop exists in ``__init__``.
         """
-        backend = self.settings.get("memory", {}).get("backend", "sqlite")
+        backend = self.settings.get("memory", {}).get("backend", "file")
         try:
             match backend:
+                case "file":
+                    memory_dir = self.settings.get("memory_dir", "~/.gaia/memory")
+                    store = FileMemoryStore(memory_dir)
                 case "chroma":
                     store = ChromaMemoryStore()
                 case _:
@@ -398,7 +401,7 @@ class GaiaTUIApp(App):
             )
             config_info.update(
                 f"MODEL: [bold #00f0ff]{self.settings.get('model', 'qwen2.5-coder:32b')}"
-                "[/bold #00f0ff] | VAULT: {enc_label}"
+                f"[/bold #00f0ff] | VAULT: {enc_label}"
             )
         except Exception:
             pass
