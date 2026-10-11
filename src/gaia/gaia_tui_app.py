@@ -15,7 +15,7 @@ from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
 
 from gaia.core.agent import Gaia
-from gaia.core.memory import ChromaMemoryStore, FileMemoryStore
+from gaia.core.memory.factory import MemoryFactory
 from gaia.config import (
     DEFAULT_SETTINGS,
     SETTINGS_FILE,
@@ -247,7 +247,11 @@ class GaiaTUIApp(App):
         _setup_logging()
         logger.info("GaiaTUIApp starting up")
         self.settings = load_config()
-        self._memory = self._init_memory()
+        try:
+            self._memory = MemoryFactory.create(self.settings)
+        except Exception:
+            logger.exception("memory factory failed — memory disabled")
+            self._memory = None
         self.__core_agent = Gaia(
             system_prompt=self.settings.system_prompt,
             model_name=self.settings.model,
@@ -255,31 +259,6 @@ class GaiaTUIApp(App):
             memory=self._memory,
         )
         self.is_shutting_down = False
-
-    def _init_memory(self) -> "FileMemoryStore | ChromaMemoryStore | None":
-        """Create a MemoryStore based on the configured backend.
-
-        Reads ``memory.backend`` from settings (``"file"`` or ``"chroma"``).
-        Falls back to ``None`` (no memory) if unset or invalid.  Uses
-        ``asyncio.run()`` for the one-shot ``initialize()`` call since no
-        event loop exists in ``__init__``.
-        """
-        backend = self.settings.memory.backend
-        try:
-            match backend:
-                case "file":
-                    memory_dir = self.settings.memory.memory_dir
-                    store = FileMemoryStore(memory_dir)
-                case "chroma":
-                    store = ChromaMemoryStore()
-                case _:
-                    return None
-
-            asyncio.run(store.initialize())
-            return store
-        except Exception:
-            # Memory is optional — degrade gracefully
-            return None
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
@@ -380,6 +359,25 @@ class GaiaTUIApp(App):
         self.watch_connection_status(self.connection_status)
         self.ping_loop()
         self._mount_autocomplete_popup()
+        if self._memory is not None:
+            try:
+                task = asyncio.create_task(self._memory.initialize())
+                self.__memory_init_task = task  # keep reference to retrieve result
+                task.add_done_callback(self.__on_memory_init_done)
+            except RuntimeError:
+                logger.warning("no event loop — memory init deferred")
+            except Exception:
+                logger.exception("memory init failed — memory disabled")
+                self._memory = None
+
+    def __on_memory_init_done(self, task: asyncio.Task) -> None:
+        """Retrieve the memory initialization result to avoid
+        'Task exception was never retrieved' warnings."""
+        try:
+            task.result()
+        except Exception:
+            logger.exception("memory initialization failed — memory disabled")
+            self._memory = None
 
     def _mount_autocomplete_popup(self) -> None:
         """Create and mount the autocomplete popup into the input container.

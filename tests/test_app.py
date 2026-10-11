@@ -180,8 +180,8 @@ class TestGaiaTUIAppInit:
         assert "ctrl+l" in commands
         assert "f1" in commands
 
-    def test_init_memory_returns_none_for_unknown_backend(self) -> None:
-        """_init_memory returns None when memory backend is unknown."""
+    def test_memory_factory_returns_none_for_unknown_backend(self) -> None:
+        """MemoryFactory returns None when memory backend is unknown."""
         with patch(
             "gaia.gaia_tui_app.load_config",
             return_value=Settings(
@@ -194,17 +194,17 @@ class TestGaiaTUIAppInit:
 
         assert app._memory is None
 
-    def test_init_memory_returns_none_when_init_fails(self) -> None:
-        """_init_memory degrades gracefully when store initialization raises."""
+    def test_memory_factory_degrades_on_factory_error(self) -> None:
+        """GaiaTUIApp degrades gracefully when the factory raises."""
         with patch(
             "gaia.gaia_tui_app.load_config",
             return_value=Settings.from_dict({"model": "test", "memory": {"backend": "chroma"}}),
         ):
             with patch("gaia.gaia_tui_app.Gaia"):
                 with patch(
-                    "gaia.gaia_tui_app.ChromaMemoryStore"
-                ) as MockStore:
-                    MockStore.side_effect = Exception("init failed")
+                    "gaia.gaia_tui_app.MemoryFactory.create"
+                ) as mock_create:
+                    mock_create.side_effect = Exception("init failed")
                     app = GaiaTUIApp()
 
         assert app._memory is None
@@ -217,7 +217,7 @@ class TestForceExit:
         """force_exit sets is_shutting_down = True."""
         with (
             patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
-            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
         ):
             app = GaiaTUIApp()
             app.force_exit()
@@ -228,7 +228,7 @@ class TestForceExit:
         """force_exit calls cancel_all on the workers manager."""
         with (
             patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
-            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
             patch.object(GaiaTUIApp, "workers") as mock_workers,
         ):
             app = GaiaTUIApp()
@@ -240,7 +240,7 @@ class TestForceExit:
         """force_exit calls App.exit()."""
         with (
             patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
-            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
         ):
             app = GaiaTUIApp()
             app.exit = MagicMock()
@@ -253,7 +253,7 @@ class TestForceExit:
         """force_exit calls _close_memory when memory is present."""
         with (
             patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
-            patch.object(GaiaTUIApp, "_init_memory", return_value=None),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
         ):
             app = GaiaTUIApp()
             mock_store = AsyncMock()
@@ -273,7 +273,7 @@ class TestRememberCommand:
 
     def _make_app_and_chatbox(self, memory=None):
         """Create a GaiaTUIApp with mocked memory and chat_box."""
-        with patch.object(GaiaTUIApp, "_init_memory", return_value=None):
+        with patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None):
             app = GaiaTUIApp()
         app._memory = AsyncMock() if memory is False else memory
         chat_box = MagicMock()
@@ -332,7 +332,7 @@ class TestModelCommand:
 
     def _make_app(self, settings=None, memory=None):
         """Create a GaiaTUIApp with mocked settings, memory and chat_box."""
-        with patch.object(GaiaTUIApp, "_init_memory", return_value=None):
+        with patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None):
             app = GaiaTUIApp()
         if settings is not None:
             app.settings = settings
