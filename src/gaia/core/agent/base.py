@@ -13,10 +13,8 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.agent import RunContext
+from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 

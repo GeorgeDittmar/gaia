@@ -1,35 +1,37 @@
-"""Main G.A.I.A. terminal UI application (GaiaTUIApp)."""
+"""Main G.A.I.A. terminal UI application (GaiaTUIApp).
+
+This module defines the Textual application, chat turns, and UI layout.
+Business logic is extracted into separate modules:
+
+- ``slash_commands`` — slash command dispatch
+- ``streaming`` — agent streaming loop
+- ``memory_lifecycle`` — memory store initialisation and shutdown
+- ``fact_extraction`` — post-turn fact extraction pipeline
+"""
 
 import asyncio
-import json
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
 
-from textual.app import App, ComposeResult
-from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Button, Switch, Label, TextArea
-from textual.widgets.option_list import Option
-from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.reactive import reactive
+from textual.widgets import Input, Static
 
+from gaia.command_input import CommandInput
+from gaia.config import (
+    check_endpoint,
+    load_config,
+)
 from gaia.core.agent import Gaia
 from gaia.core.memory.factory import MemoryFactory
-from gaia.config import (
-    DEFAULT_SETTINGS,
-    SETTINGS_FILE,
-    Settings,
-    load_config,
-    save_config,
-    check_endpoint,
-    parse_slash_command,
-)
-from gaia.command_input import CommandInput
 from gaia.help_modal import HelpModal
-from gaia.settings_modal import SettingsModal
-
-from datetime import datetime
+from gaia.memory_lifecycle import MemoryLifecycle
+from gaia.fact_extraction import start_fact_extraction
+from gaia.slash_commands import SlashCommandHandler
+from gaia.streaming import run_agent_stream
 
 logger = logging.getLogger("gaia.tui")
 
@@ -258,12 +260,12 @@ class GaiaTUIApp(App):
             endpoint=self.settings.endpoint,
             memory=self._memory,
         )
+        self._slash_handler = SlashCommandHandler(self)
         self.is_shutting_down = False
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
-        if self._memory is not None:
-            await self._memory.close()
+        await MemoryLifecycle.close(self._memory)
 
     def watch_connection_status(self, new_status: str) -> None:
         """Reactive watcher that safely updates the status badge once mounted."""
@@ -361,8 +363,8 @@ class GaiaTUIApp(App):
         self._mount_autocomplete_popup()
         if self._memory is not None:
             try:
-                task = asyncio.create_task(self._memory.initialize())
-                self.__memory_init_task = task  # keep reference to retrieve result
+                task = MemoryLifecycle.create_init_task(self._memory)
+                self.__memory_init_task = task
                 task.add_done_callback(self.__on_memory_init_done)
             except RuntimeError:
                 logger.warning("no event loop — memory init deferred")
@@ -371,8 +373,7 @@ class GaiaTUIApp(App):
                 self._memory = None
 
     def __on_memory_init_done(self, task: asyncio.Task) -> None:
-        """Retrieve the memory initialization result to avoid
-        'Task exception was never retrieved' warnings."""
+        """Retrieve the memory-initialisation result to suppress warnings."""
         try:
             task.result()
         except Exception:
@@ -475,7 +476,7 @@ class GaiaTUIApp(App):
             return
 
         if user_text.startswith("/"):
-            await self.handle_slash_command(user_text)
+            await self._slash_handler.handle_slash_command(user_text)
             return
 
         chat_box = self.query_one("#chat-container", ScrollableContainer)
@@ -489,397 +490,11 @@ class GaiaTUIApp(App):
 
         self.run_agent_execution(user_text)
 
-    async def handle_slash_command(self, raw_command: str) -> None:
-        parts = raw_command[1:].split(maxsplit=1)
-        cmd = parts[0].lower() if parts else ""
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        chat_box = self.query_one("#chat-container", ScrollableContainer)
-
-        match cmd:
-            case "exit" | "quit" | "close":
-                self.force_exit()
-
-            case "help":
-                self.action_show_help()
-
-            case "model":
-                if arg:
-                    self.settings = Settings.from_dict({**self.settings.to_dict(), "model": arg})
-                    save_config(self.settings)
-                    self.__core_agent.reconfigure(model_name=arg)
-                    self._refresh_config_info()
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Active Model Updated:[/bold #00f0ff] {arg}",
-                            classes="agent-msg",
-                        )
-                    )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Current Model:[/bold #00f0ff] "
-                            f"{self.settings.model}\n"
-                            "Usage: [bold]/model <model_name>[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "settings":
-
-                def on_settings_closed(
-                    new_config: Dict[str, Any] | None,
-                ) -> None:
-                    if new_config:
-                        merged = {**self.settings.to_dict(), **new_config}
-                        self.settings = Settings.from_dict(merged)
-                        save_config(self.settings)
-                        self.__core_agent.reconfigure(
-                            model_name=self.settings.model,
-                            endpoint=self.settings.endpoint,
-                        )
-                        self._refresh_config_info()
-
-                        self.call_after_refresh(
-                            chat_box.mount,
-                            ChatTurn(
-                                f"[bold #00f0ff]System Config Saved:[/bold #00f0ff]\n"
-                                f"  • Persisted to: "
-                                f"[bold]{SETTINGS_FILE.resolve()}[/bold]\n"
-                                f"  • Model: "
-                                f"[bold]{self.settings.model}[/bold]\n"
-                                f"  • Endpoint: {self.settings.endpoint}\n"
-                                f"  • System Prompt: "
-                                f"[dim]{self.settings.system_prompt[:60]}...[/dim]\n"
-                                f"  • Vault Encryption: "
-                                f"{'Enabled' if self.settings.encrypted else 'Disabled'}",
-                                classes="agent-msg",
-                            ),
-                        )
-
-                self.push_screen(
-                    SettingsModal(self.settings), on_settings_closed
-                )
-
-            case "clear":
-                await chat_box.remove_children()
-                await chat_box.mount(
-                    Static(
-                        "[bold #ff007f]G.A.I.A. SYSTEM RESET[/bold #ff007f]\n"
-                        "[dim #8b949e]Terminal buffer cleared.[/dim #8b949e]\n",
-                        id="welcome",
-                    )
-                )
-
-            case "debug":
-                if arg.lower() == "on":
-                    self._debug_mode = True
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Debug:[/bold #ff007f] "
-                            "[bold #00f0ff]ON[/bold #00f0ff] — extraction status "
-                            "will appear in chat",
-                            classes="agent-msg",
-                        )
-                    )
-                elif arg.lower() == "off":
-                    self._debug_mode = False
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Debug:[/bold #ff007f] "
-                            "[bold #ff007f]OFF[/bold #ff007f] — extraction status hidden",
-                            classes="agent-msg",
-                        )
-                    )
-                else:
-                    state = "ON" if self._debug_mode else "OFF"
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #ff007f]Debug:[/bold #ff007f] {state} — "
-                            "usage: [bold]/debug on[/bold] or [bold]/debug off[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "status":
-                status_info = (
-                    "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
-                    f"  • LLM Endpoint Status: {self.connection_status}\n"
-                    f"  • Model Runtime: {self.settings.model}\n"
-                    f"  • Host Endpoint: {self.settings.endpoint}\n"
-                    f"  • System Prompt Length: "
-                    f"{len(self.settings.system_prompt)} chars\n"
-                    f"  • Vault State: "
-                    f"{'AES-256 (SQLCipher)' if self.settings.encrypted else 'Unencrypted Plaintext'}\n"
-                    f"  • Config File: {SETTINGS_FILE.resolve()}"
-                )
-                await chat_box.mount(
-                    ChatTurn(status_info, classes="agent-msg")
-                )
-
-            case "remember":
-                if arg:
-                    if self._memory is not None:
-                        await self._memory.semantic_insert(
-                            content=arg,
-                            category="preference",
-                            confidence=1.0,
-                            source="user",
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #00f0ff]Fact Stashed:[/bold #00f0ff] "
-                                f"[dim #8b949e]{arg}[/dim #8b949e]",
-                                classes="agent-msg",
-                            )
-                        )
-                    else:
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                                "Memory store is not initialized.",
-                                classes="agent-msg",
-                            )
-                        )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Usage:[/bold #ff007f] "
-                            "/remember <fact to store>\n"
-                            "Example: [bold]/remember user prefers Python[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "extract":
-                if self._memory is not None and self.__core_agent is not None:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #00f0ff]Extracting facts...[/bold #00f0ff]",
-                            classes="agent-msg",
-                            id="extract-status",
-                        )
-                    )
-                    chat_box.scroll_end()
-
-                    count = await self.__core_agent.extract_from_history(
-                        max_turns=10,
-                    )
-                    await chat_box.remove_children(
-                        predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-status"
-                    )
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
-                            f"[bold]{count}[/bold] facts extracted from recent history.",
-                            classes="agent-msg",
-                            id="extract-status",
-                        )
-                    )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                            "Memory store is not initialized.",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "extract-debug":
-                # Debug mode: do one extraction on the latest turn and show raw output
-                if self._memory is not None and self.__core_agent is not None:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #00f0ff]Debug extraction...[/bold #00f0ff]",
-                            classes="agent-msg",
-                            id="extract-debug-status",
-                        )
-                    )
-                    chat_box.scroll_end()
-
-                    # Get the latest turn from episodic memory
-                    results = await self._memory.episodic_search(
-                        query="conversation turn", limit=1
-                    )
-                    if results:
-                        latest = results[0]
-                        raw_payload = latest.get("payload", "{}")
-                        if isinstance(raw_payload, str):
-                            try:
-                                payload = json.loads(raw_payload)
-                            except (json.JSONDecodeError, ValueError):
-                                payload = {}
-                        else:
-                            payload = raw_payload
-                        user_msg = payload.get("user_prompt", "(none)")
-                        agent_resp = payload.get("agent_response", "(none)")
-                        status_text = (
-                            f"[dim #8b949e]=== DEBUG EXTRACTION ===[/dim #8b949e]\n"
-                            f"[dim]User: {user_msg[:200]}[/dim]\n"
-                            f"[dim]Agent: {agent_resp[:200]}[/dim]"
-                        )
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-debug-status"
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                status_text,
-                                classes="agent-msg",
-                                id="extract-debug-status",
-                            )
-                        )
-                        # Now actually run extraction
-                        count = await self.__core_agent.post_turn_extract(
-                            user_msg, agent_resp
-                        )
-                        # Show result
-                        await chat_box.mount(
-                            ChatTurn(
-                                f"[bold #00f0ff]Extracted & saved: {count} fact(s)[/bold #00f0ff]",
-                                classes="agent-msg",
-                            )
-                        )
-                    else:
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-debug-status"
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]No conversation turns found in episodic memory.[/bold #007f]",
-                                classes="agent-msg",
-                            )
-                        )
-                    chat_box.scroll_end()
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                            "Memory store is not initialized.",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case _:
-                await chat_box.mount(
-                    ChatTurn(
-                        f"[bold #ff007f]Unknown Command:[/bold #ff007f] "
-                        f"/{cmd}. Type [bold]/[/bold] to browse valid commands.",
-                        classes="agent-msg",
-                    )
-                )
-
-        chat_box.scroll_end()
-
     @work(exclusive=True, thread=False)
     async def run_agent_execution(self, prompt: str) -> None:
-        chat_box = self.query_one("#chat-container", ScrollableContainer)
-
-        agent_widget = ChatTurn(
-            "[bold #00f0ff]G.A.I.A.:[/bold #00f0ff] ",
-            classes="agent-msg",
-        )
-        await chat_box.mount(agent_widget)
-
-        base_prefix = (
-            f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
-        )
-        response_accumulator = ""
-        dots_states = [".  ", ".. ", "..."]
-        dot_index = 0
-        first_token_received = False
-
-        async def animate_waiting() -> None:
-            nonlocal dot_index
-            while not first_token_received and not self.is_shutting_down:
-                dot_text = dots_states[dot_index % len(dots_states)]
-                agent_widget.update(
-                    base_prefix + f"[dim #8b949e]{dot_text}[/dim #8b949e]"
-                )
-                dot_index += 1
-                await asyncio.sleep(0.2)
-
-        anim_task = asyncio.create_task(animate_waiting())
-
-        try:
-            async for token in self.__core_agent.ainteract(prompt=prompt):
-                if self.is_shutting_down:
-                    break
-
-                if not first_token_received:
-                    first_token_received = True
-                    anim_task.cancel()
-                    try:
-                        await anim_task
-                    except asyncio.CancelledError:
-                        pass
-                    response_accumulator = ""
-
-                response_accumulator += token
-                agent_widget.update(base_prefix + response_accumulator)
-                chat_box.scroll_end()
-        finally:
-            if not anim_task.done():
-                anim_task.cancel()
-                try:
-                    await anim_task
-                except asyncio.CancelledError:
-                    pass
-
-        agent_widget.update(base_prefix + response_accumulator)
-        chat_box.scroll_end()
-
-        # 5. Background fact extraction (never blocks response)
-        if self._memory is not None:
-            logger.info("scheduling fact extraction (memory=%s)", type(self._memory).__name__)
-            self.call_later(self._start_fact_extraction, prompt, response_accumulator)
+        """Delegate to the streaming module, then trigger post-turn extraction."""
+        await run_agent_stream(self, prompt)
 
     def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
-        """Launch post-turn fact extraction as a background task."""
-        logger.info("extraction callback fired — prompt=%s", user_prompt[:80])
-        try:
-            asyncio.create_task(self._run_extraction(user_prompt, agent_response))
-        except Exception:
-            logger.exception("failed to create extraction task")
-
-    async def _run_extraction(
-        self, user_prompt: str, agent_response: str
-    ) -> None:
-        """Run extraction and show result in chat only if debug mode is on."""
-        logger.info("extraction running")
-        try:
-            count = await self.__core_agent.post_turn_extract(
-                user_prompt, agent_response
-            )
-            logger.info("extraction complete — %d facts", count)
-            self.call_after_refresh(self._do_mount_extraction_status, count)
-        except Exception:
-            logger.exception("extraction task failed")
-
-    def _do_mount_extraction_status(self, count: int) -> None:
-        """Show a persistent message in the chat after extraction — only when debug is on."""
-        if not self._debug_mode:
-            return
-        try:
-            chat_box = self.query_one("#chat-container", ScrollableContainer)
-            if count > 0:
-                msg = (
-                    f"[bold #00f0ff]🧠 Memory[/bold #00f0ff] "
-                    f"[dim #8b949e]— {count} fact{'s' if count > 1 else ''} "
-                    f"auto-saved ✓[/dim #8b949e]"
-                )
-            else:
-                msg = (
-                    f"[bold #ff007f]🧠 Memory[/bold #ff007f] "
-                    f"[dim #8b949e]— no facts extracted ✗ "
-                    f"(run /extract-debug to see why)[/dim #8b949e]"
-                )
-            chat_box.mount(
-                ChatTurn(
-                    msg,
-                    classes="agent-msg",
-                    id="_auto-save-status",
-                )
-            )
-            chat_box.scroll_end()
-        except Exception:
-            pass
+        """Launch post-turn fact extraction (delegated to fact_extraction module)."""
+        start_fact_extraction(self, user_prompt, agent_response)

@@ -290,7 +290,7 @@ class TestRememberCommand:
         with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
-            await app.handle_slash_command("/remember user likes python")
+            await app._slash_handler.handle_slash_command("/remember user likes python")
 
             app._memory.semantic_insert.assert_awaited_once_with(
                 content="user likes python",
@@ -306,7 +306,7 @@ class TestRememberCommand:
         with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
-            await app.handle_slash_command("/remember")
+            await app._slash_handler.handle_slash_command("/remember")
 
             app._memory.semantic_insert.assert_not_called()
             chat_box.mount.assert_called_once()
@@ -317,7 +317,7 @@ class TestRememberCommand:
         with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=None)
 
-            await app.handle_slash_command("/remember test fact")
+            await app._slash_handler.handle_slash_command("/remember test fact")
 
             chat_box.mount.assert_called_once()
 
@@ -351,8 +351,8 @@ class TestModelCommand:
         settings = Settings(model="original")
         app, _ = self._make_app(settings=settings)
 
-        with patch("gaia.gaia_tui_app.save_config") as mock_save:
-            await app.handle_slash_command("/model llama3.3:70b")
+        with patch("gaia.config.save_config") as mock_save:
+            await app._slash_handler.handle_slash_command("/model llama3.3:70b")
 
         assert app.settings.model == "llama3.3:70b"
         mock_save.assert_called_once()
@@ -363,7 +363,7 @@ class TestModelCommand:
         settings = Settings(model="qwen2.5-coder:32b")
         app, _ = self._make_app(settings=settings)
 
-        await app.handle_slash_command("/model")
+        await app._slash_handler.handle_slash_command("/model")
 
         # Should show current model in chat output
         assert app.query_one.call_count >= 1
@@ -378,8 +378,8 @@ class TestModelCommand:
         )
         app, _ = self._make_app(settings=settings)
 
-        with patch("gaia.gaia_tui_app.save_config"):
-            await app.handle_slash_command("/model new-model")
+        with patch("gaia.config.save_config"):
+            await app._slash_handler.handle_slash_command("/model new-model")
 
         assert app.settings.model == "new-model"
         assert app.settings.endpoint == "http://old.local"

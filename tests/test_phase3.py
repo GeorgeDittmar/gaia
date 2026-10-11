@@ -225,7 +225,7 @@ class TestGaiatuiappModelSwitchReconfiguresAgent:
         mock_agent = MagicMock()
         app, _ = self._make_app(settings=settings, agent=mock_agent)
 
-        await app.handle_slash_command("/model new-model")
+        await app._slash_handler.handle_slash_command("/model new-model")
 
         mock_agent.reconfigure.assert_called_once_with(model_name="new-model")
 
@@ -236,8 +236,8 @@ class TestGaiatuiappModelSwitchReconfiguresAgent:
         mock_agent = MagicMock()
         app, _ = self._make_app(settings=settings, agent=mock_agent)
 
-        with patch("gaia.gaia_tui_app.save_config") as mock_save:
-            await app.handle_slash_command("/model new-model")
+        with patch("gaia.config.save_config") as mock_save:
+            await app._slash_handler.handle_slash_command("/model new-model")
 
         mock_save.assert_called_once()
         assert app.settings.model == "new-model"
@@ -323,7 +323,7 @@ class TestSettingsModalReconfigure:
         mock_agent = MagicMock()
         app._GaiaTUIApp__core_agent = mock_agent
 
-        with patch("gaia.gaia_tui_app.save_config"):
+        with patch("gaia.config.save_config"):
             # Simulate the settings modal callback with a new model
             new_config = {"model": "new-model"}
             merged = {**app.settings.to_dict(), **new_config}

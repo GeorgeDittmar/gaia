@@ -26,7 +26,7 @@ class MemoryFactory:
     """
 
     @staticmethod
-    def create(settings: Settings) -> "MemoryStore | None":
+    def create(settings: Settings) -> MemoryStore | None:
         """Create a memory store without initializing it."""
         match settings.memory.backend:
             case "file":
