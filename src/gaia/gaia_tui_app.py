@@ -249,7 +249,9 @@ class GaiaTUIApp(App):
         self.settings = load_config()
         self._memory = self._init_memory()
         self.__core_agent = Gaia(
-            self.settings.system_prompt,
+            system_prompt=self.settings.system_prompt,
+            model_name=self.settings.model,
+            endpoint=self.settings.endpoint,
             memory=self._memory,
         )
         self.is_shutting_down = False
@@ -507,6 +509,7 @@ class GaiaTUIApp(App):
                 if arg:
                     self.settings = Settings.from_dict({**self.settings.to_dict(), "model": arg})
                     save_config(self.settings)
+                    self.__core_agent.reconfigure(model_name=arg)
                     self._refresh_config_info()
                     await chat_box.mount(
                         ChatTurn(
@@ -533,6 +536,10 @@ class GaiaTUIApp(App):
                         merged = {**self.settings.to_dict(), **new_config}
                         self.settings = Settings.from_dict(merged)
                         save_config(self.settings)
+                        self.__core_agent.reconfigure(
+                            model_name=self.settings.model,
+                            endpoint=self.settings.endpoint,
+                        )
                         self._refresh_config_info()
 
                         self.call_after_refresh(

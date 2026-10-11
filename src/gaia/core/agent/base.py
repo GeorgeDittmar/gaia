@@ -64,39 +64,6 @@ class FactResult(BaseModel):
 
 # ── Extraction agent (reusable, structured output) ─────────────────
 
-def _make_extraction_agent() -> Agent[FactResult]:
-    """Build a dedicated pydantic-ai agent with structured output for fact extraction.
-
-    Uses pydantic-ai's result_type so the LLM is **forced** to return a FactResult.
-    If the model returns malformed output, pydantic-ai will retry automatically
-    with a ModelRetry instruction.
-    """
-    model = OpenAIChatModel(
-        "local-model",
-        provider=OpenAIProvider(
-            base_url="http://localhost:8080/v1",
-            api_key="not-needed",
-        ),
-    )
-    return Agent(
-        model,
-        instructions=(
-            "You extract factual statements about the USER from the conversation below.\n"
-            "Return ONLY facts the user has stated or strongly implied about themselves:\n"
-            "  - Preferences (what they like/dislike)\n"
-            "  - Personal info (name, location, job, etc.)\n"
-            "  - Project details (what they're building, tech stack, bugs)\n\n"
-            "Rules:\n"
-            "  - Each fact must be a complete declarative sentence about the user\n"
-            "  - Skip greetings, pleasantries, or conversational filler\n"
-            "  - Skip facts that are obvious or generic\n"
-            "  - If nothing extractable is found, return an empty facts list\n"
-            "  - Set confidence high (0.8-1.0) for explicit statements, lower (0.5-0.7) for inferred\n"
-        ),
-        output_type=FactResult,
-    )
-
-
 class Gaia:
     """Memory-aware agent harness.
 
@@ -107,35 +74,96 @@ class Gaia:
 
     Args:
         system_prompt: Instructions that shape the agent's behaviour.
-        model_name: Optional override for the model identifier (default
-            ``'local-model'``).
+        model_name: Model identifier passed to the LLM provider.
+        endpoint: Base URL of the OpenAI-compatible API endpoint.
+        api_key: API key for the endpoint (default ``'not-needed'``).
         memory: Optional :class:`MemoryStore` — if provided, semantic
             retrieval and episodic logging are enabled.
     """
 
-    # Hard-coded defaults — these should eventually read from settings
-    DEFAULT_MODEL = "local-model"
-    DEFAULT_ENDPOINT = "http://localhost:8080/v1"
-
     def __init__(
         self,
         system_prompt: str,
-        model_name: str = "",
+        model_name: str = "local-model",
+        endpoint: str = "http://localhost:8080/v1",
+        api_key: str = "not-needed",
         memory: MemoryStore | None = None,
     ) -> None:
+        self._system_prompt = system_prompt
+        self._model_name = model_name
+        self._endpoint = endpoint
+        self._api_key = api_key
+
         model = OpenAIChatModel(
-            model_name or self.DEFAULT_MODEL,
+            model_name,
             provider=OpenAIProvider(
-                base_url=self.DEFAULT_ENDPOINT,
-                api_key="not-needed",
+                base_url=endpoint,
+                api_key=api_key,
             ),
         )
         self.__core_agent = Agent(model, instructions=system_prompt)
         self.__message_hist: list[dict] = []
         self._memory = memory
         self.__conv_id = _generate_conversation_id()
-        # Cached extraction agent (same model, structured output)
-        self.__extraction_agent = _make_extraction_agent()
+        self.__extraction_agent = self._make_extraction_agent()
+
+    def _make_extraction_agent(self) -> Agent[FactResult]:
+        """Build a dedicated pydantic-ai agent with structured output for fact extraction.
+
+        Uses the same model and endpoint as the main agent.
+        """
+        model = OpenAIChatModel(
+            self._model_name,
+            provider=OpenAIProvider(
+                base_url=self._endpoint,
+                api_key=self._api_key,
+            ),
+        )
+        return Agent(
+            model,
+            instructions=(
+                "You extract factual statements about the USER from the conversation below.\n"
+                "Return ONLY facts the user has stated or strongly implied about themselves:\n"
+                "  - Preferences (what they like/dislike)\n"
+                "  - Personal info (name, location, job, etc.)\n"
+                "  - Project details (what they're building, tech stack, bugs)\n\n"
+                "Rules:\n"
+                "  - Each fact must be a complete declarative sentence about the user\n"
+                "  - Skip greetings, pleasantries, or conversational filler\n"
+                "  - Skip facts that are obvious or generic\n"
+                "  - If nothing extractable is found, return an empty facts list\n"
+                "  - Set confidence high (0.8-1.0) for explicit statements, lower (0.5-0.7) for inferred\n"
+            ),
+            output_type=FactResult,
+        )
+
+    def reconfigure(self, model_name: str = "", endpoint: str = "", api_key: str = "") -> None:
+        """Swap the underlying model and/or endpoint.
+
+        Only non-empty values are applied, so callers can pass
+        ``self.reconfigure(model_name=new_model)`` without
+        worrying about clobbering the endpoint.
+
+        Both the main agent and the extraction agent are rebuilt
+        with the new configuration.
+        """
+        if model_name:
+            self._model_name = model_name
+        if endpoint:
+            self._endpoint = endpoint
+        if api_key:
+            self._api_key = api_key
+
+        model = OpenAIChatModel(
+            self._model_name,
+            provider=OpenAIProvider(
+                base_url=self._endpoint,
+                api_key=self._api_key,
+            ),
+        )
+        self.__core_agent = Agent(model, instructions=self._system_prompt)
+        self.__extraction_agent = self._make_extraction_agent()
+        self.__message_hist = []
 
     # ── Public API ─────────────────────────────────────────────────
 

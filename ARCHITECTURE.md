@@ -28,36 +28,24 @@ gaia/
 ├── pyproject.toml              # Project metadata + dependencies + hatchling build
 ├── uv.lock                     # Locked dependencies
 ├── README.md                   # One-liner: "G.A.I.A / General AI Assistant"
-├── fibonacci.py                # Development experiment / test file
-├── pong.py                     # Development experiment / test file
-├── test_fts_fix.py             # FTS5 apostrophe/dot handling regression test
-├── gaia-memory.db              # SQLite memory database (generated at runtime)
 ├── src/
 │   ├── gaia/                   # The "gaia" package (hatchling-managed)
 │   │   ├── __init__.py         # Re-exports: `GaiaTUIApp` from gaia_tui_app
 │   │   ├── cli.py              # CLI entry point — installed as `gaia` console script
-│   │   ├── config.py           # Config loading, endpoint checking, slash parsing
+│   │   ├── config.py           # Settings dataclass, config loading, endpoint checking
 │   │   ├── gaia_tui_app.py     # Main Textual app (GaiaTUIApp) — the TUI entrypoint
 │   │   ├── command_input.py    # CommandInput widget — slash-command autocomplete
 │   │   ├── help_modal.py       # HelpModal — F1/? keyboard shortcut reference
 │   │   └── settings_modal.py   # SettingsModal — /settings pop-up dialog
 │   │   ├── core/               # Core engine
-│   │   │   ├── __init__.py     # (empty — reserved)
 │   │   │   ├── agent/
 │   │   │   │   ├── __init__.py # Re-exports: `Gaia` from base
 │   │   │   │   └── base.py     # `Gaia` class — pydantic-ai agent harness + fact extraction
-│   │   │   ├── base/           # Placeholder for shared base types (empty — reserved)
-│   │   │   └── memory/         # Memory layer — TWO FULL BACKENDS IMPLEMENTED
-│   │   │       ├── __init__.py # Exports: MemoryStore, SQLiteMemoryStore, ChromaMemoryStore
+│   │   │   └── memory/         # Memory layer — flat-file store + ChromaDB optional
+│   │   │       ├── __init__.py # Exports: MemoryStore, FileMemoryStore, ChromaMemoryStore
 │   │   │       ├── base.py     # Abstract MemoryStore protocol (ABC)
-│   │   │       ├── sqlite_store.py   # Default backend — SQLite + FTS5
-│   │   │       ├── chroma_store.py   # Optional backend — ChromaDB vector search
-│   │   │       ├── management.py     # Memory management / consolidation (scaffolded)
-│   │   │       ├── episodic.py       # (empty — reserved)
-│   │   │       ├── shortterm.py      # (empty — reserved)
-│   │   │       └── longterm.py       # (empty — reserved)
-│   ├── app/
-│   │   └── __init__.py         # STALE — empty file, left as deletion candidate
+│   │   │       ├── file_store.py   # Default backend — flat markdown files + keyword search
+│   │   │       └── chroma_store.py # Optional backend — ChromaDB vector search
 │   └── plugins/
 │       └── __init__.py         # Empty — reserved for a future plugin system
 ```
@@ -70,19 +58,19 @@ gaia/
 
 - `uv run python main.py` or `gaia` (installed console script) both launch
   `GaiaTUIApp()`.
-- `src/cli.py` is the installed entry point; `main.py` in the repo root is a
-  13-line stub delegating to `GaiaTUIApp`.
+- `src/gaia/cli.py` is the installed entry point; `main.py` in the repo root is a
+  stub delegating to `GaiaTUIApp`.
 
 ### Config flow
 
 `GaiaTUIApp.__init__` calls `load_config()` from `gaia.config`, which merges
-`settings.json` on disk over `DEFAULT_SETTINGS` (disk values win). Config
-keys relevant to memory:
+`settings.json` on disk over `DEFAULT_SETTINGS` (disk values win). The return
+type is now the `Settings` dataclass.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `memory_db` | `str` | `"gaia-memory.db"` | Path to the SQLite database |
-| `memory.backend` | `"sqlite"` or `"chroma"` | `"sqlite"` | Storage backend to use |
+| `memory_dir` | `str` | `"~/.gaia/memory"` | Directory for flat-file memory |
+| `memory.backend` | `"file"` or `"chroma"` | `"file"` | Storage backend to use |
 
 ### User message
 
@@ -129,10 +117,10 @@ OpenAI-compatible endpoint. Key capabilities:
 - **`_classify_fact(fact_text)`** — Static keyword-based classifier using
   `_PREFERENCE_KEYWORDS` and `_PROJECT_KEYWORDS` sets.
 
-The agent hard-codes the model name (`local-model`) and endpoint
-(`http://localhost:8080/v1`). The UI's `settings["model"]` / `settings["endpoint"]`
-are **not** currently passed into the agent — `/model` switching affects display
-only. This is a known gap.
+The agent currently hard-codes the model name (`local-model`) and endpoint
+(`http://localhost:8080/v1`). The UI's `settings.model` / `settings.endpoint`
+are **not** passed into the agent yet — `/model` switching affects display
+only. This is tracked for Phase 3.
 
 ### Endpoint polling
 
@@ -154,7 +142,7 @@ procedural definitions, and an audit log. All are accessed through the
 Defined in `src/gaia/core/memory/base.py`. Every backend implements:
 
 **Lifecycle:**
-- `initialize()` — Open connection, create tables/collections
+- `initialize()` — Open connection, create tables/collections/directories
 - `close()` — Release resources
 
 **Semantic memory** (facts about the user):
@@ -177,38 +165,44 @@ Defined in `src/gaia/core/memory/base.py`. Every backend implements:
 **Audit log:**
 - `audit_log(action, actor, target_type, target_id, detail)` — append-only
 
-### Backend: SQLite + FTS5 (default)
+### Backend: FileMemoryStore (default)
 
-File: `src/gaia/core/memory/sqlite_store.py`
+File: `src/gaia/core/memory/file_store.py`
 
-The default storage backend. Stores all four data types (semantic, episodic,
-procedural, audit) in a single SQLite database with FTS5 virtual tables for
-full-text search.
+The default storage backend. Stores all four data types as individual Markdown
+files with YAML-style frontmatter. No external dependencies.
 
-**Schema:**
+**Directory layout** under `memory_dir` (default: `~/.gaia/memory`):
 
-| Table | Purpose |
-|---|---|
-| `semantic_facts` | Facts with category, confidence, source; FTS5 on content |
-| `episodic_events` | Conversation turns with event_type enum; FTS5 on indexed_content |
-| `procedure_entries` | Skills/routines with safety_level enum; FTS5 on name+description |
-| `audit_log` | Append-only audit trail |
+```
+~/.gaia/memory/
+├── semantic/      <fact_id>.md
+├── episodic/      <event_id>.md
+├── procedures/    <procedure_id>.md
+└── audit/         <entry_id>.md
+```
 
-**FTS5 details:**
-- The `_fts_query(query)` function sanitizes user queries: dots are wrapped in
-  double quotes (phrase match), apostrophes are replaced with spaces (splitting
-  into separate terms), and trailing question marks are stripped.
-- `semantic_search` uses FTS5 BM25 ranking with a keyword-match fallback when the
-  query consists entirely of stopwords (e.g. "what is my name?").
+**File format:**
 
-**Encryption:**
-When `encrypted=True` in settings and SQLCipher is available, the database is
-encrypted with AES-256 via `PRAGMA key = 'gaia-local-encrypt-v1'`. In practice,
-this uses the standard `sqlite3` module — SQLCipher is not in the dependency list,
-so encryption is currently aspirational (the PRAGMA is accepted but has no effect
-without SQLCipher).
+```yaml
+---
+fact_id: abc123
+category: preference
+confidence: 0.95
+source: auto_extract
+source_id: null
+created_at: 2025-10-07T13:23:00+00:00
+updated_at: 2025-10-07T13:23:00+00:00
+---
 
-**Path:** Configured via `settings["memory_db"]` (default: `gaia-memory.db`).
+User prefers Python over Rust for scripting tasks.
+```
+
+**Search strategy:** Simple keyword token matching (TF-ish, ranked by recency).
+Stopwords are filtered. Fast for <1000 entries; degrades gracefully.
+
+**Thread safety:** All file I/O is wrapped in `asyncio.to_thread()` so the
+event loop stays responsive.
 
 ### Backend: ChromaDB (optional)
 
@@ -241,45 +235,57 @@ fetches all documents and filters in Python.
 
 ### Backend selection
 
-`GaiaTUIApp._init_memory()` reads `settings["memory"]["backend"]` and instantiates
-the matching store. Falls back to `"sqlite"` if unset or invalid. Uses
-`asyncio.run()` for the one-shot `initialize()` call since no event loop exists
-during `__init__`. Memory is optional — if initialization fails, the app degrades
-gracefully with `self._memory = None`.
-
-### Memory management
-
-File: `src/gaia/core/memory/management.py`
-
-Scaffolded but not yet implemented. Contains a `MemoryManagement` class with a
-placeholder `consolidation()` method intended for future memory compaction and
-optimization.
+`GaiaTUIApp._init_memory()` reads `settings.memory.backend` and instantiates
+the matching store (`FileMemoryStore` or `ChromaMemoryStore`). Falls back to
+`None` if unset, invalid, or initialization fails — the app degrades gracefully.
+The store is created in `__init__` and initialized on `on_mount()` via
+`await self._memory.initialize()`.
 
 ---
 
 ## Configuration
 
-`settings.json` (created with defaults if absent) drives the UI:
+`settings.json` (created with defaults if absent) drives the UI. The format:
 
 ```json
 {
   "model": "qwen2.5-coder:32b",
   "endpoint": "http://localhost:11434",
   "encrypted": true,
-  "memory_db": "gaia-memory.db",
+  "memory_dir": "~/.gaia/memory",
   "memory": {
-    "backend": "sqlite"
+    "backend": "file"
   },
   "system_prompt": "..."
 }
 ```
 
-- `DEFAULT_SETTINGS` and `AVAILABLE_MODELS` are defined in `gaia.config`.
-- On load, `load_config()` merges `settings.json` on disk over `DEFAULT_SETTINGS`
-  (disk values win).
+- `DEFAULT_SETTINGS` is the fallback dict; `load_config()` merges disk values over it.
+- `load_config()` returns a `Settings` frozen dataclass (with nested `MemoryConfig`).
+- `save_config()` accepts a `Settings` dataclass and serialises via `to_dict()`.
+- `Settings.from_dict()` validates the memory backend (invalid values default to `"file"`).
+- `AVAILABLE_MODELS` and `SLASH_COMMANDS` drive the `/model` dropdown and help overlay.
 - Editable at runtime via `/settings` (a modal) or `/model <name>`.
-- The system prompt in `AGENT.md` is the versioned copy; `DEFAULT_SETTINGS`
-  contains a shorter inline version.
+
+### `Settings` dataclass
+
+```python
+@dataclass(frozen=True)
+class MemoryConfig:
+    backend: str = "file"        # "file" or "chroma"
+    memory_dir: str = "~/.gaia/memory"
+
+@dataclass(frozen=True)
+class Settings:
+    model: str = "qwen2.5-coder:32b"
+    endpoint: str = "http://localhost:11434"
+    encrypted: bool = True
+    system_prompt: str = "..."
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+```
+
+Immutable (frozen) — callers reassign the whole `self.settings` object when
+config changes (`/model` reassigns via `Settings.from_dict()`).
 
 ---
 
@@ -290,7 +296,7 @@ optimization.
 The heart of the AI logic. Contains:
 - `FactEntry` / `FactResult` pydantic models for structured extraction output
 - `_make_extraction_agent()` — builds a dedicated pydantic-ai agent with
-  structured output for fact extraction (same model, different instructions)
+  structured output for fact extraction
 - `Gaia` class — the memory-aware agent harness
 
 ### `src/gaia/gaia_tui_app.py`
@@ -308,13 +314,26 @@ The Textual application. Key classes and methods:
 ### `src/gaia/config.py`
 
 Pure config helpers (no Textual dependency):
-- `DEFAULT_SETTINGS` — dict of defaults
+- `DEFAULT_SETTINGS` — fallback dict of defaults
 - `AVAILABLE_MODELS` — list of `{arg, desc}` dicts
 - `SLASH_COMMANDS` — list of `{cmd, desc}` dicts
-- `load_config()` / `save_config()` — persistence
+- `Settings` / `MemoryConfig` — frozen dataclasses with `from_dict()` / `to_dict()`
+- `load_config()` → `Settings` — reads and validates settings from disk
+- `save_config(settings: Settings)` → `None` — persists to JSON
 - `check_endpoint()` — async network ping (threaded via `run_in_executor`)
 - `parse_slash_command()` — splits `/cmd arg` into `(cmd, arg)`
 - `is_exit_command()` / `is_slash_input()` — helpers
+
+### `src/gaia/core/memory/file_store.py`
+
+Flat-file `MemoryStore` implementation. Each fact/event/procedure/audit entry is
+a separate Markdown file with YAML frontmatter. Search uses keyword token
+matching. No external dependencies.
+
+### `src/gaia/core/memory/chroma_store.py`
+
+ChromaDB-based `MemoryStore` implementation. Uses vector embeddings for semantic
+search. Thread-safe via `asyncio.to_thread()` wrapping.
 
 ---
 
@@ -339,22 +358,17 @@ Dev: `pytest`, `pytest-asyncio`
 
 1. **Agent not wired to settings.** `Gaia.__init__` hardcodes the model
    (`'local-model'`), endpoint (`http://localhost:8080/v1`), and
-   `api_key='not-needed'`. The UI's `settings["model"]` / `settings["endpoint"]`
-   are not passed into the agent.
+   `api_key='not-needed'`. The UI's `settings.model` / `settings.endpoint`
+   are not passed into the agent. *(Tracked for Phase 3.)*
 2. **Endpoint defaults inconsistent.** `Gaia` uses `http://localhost:8080/v1`;
    `DEFAULT_SETTINGS` uses `http://localhost:11434` (Ollama).
 3. **Encryption is aspirational.** The `encrypted` toggle and "SQLCipher Vault"
-   copy exist in the UI, but SQLCipher is not a dependency — the PRAGMA has no
-   effect with the standard `sqlite3` module.
-4. **Memory management stub.** `management.py` has a placeholder `consolidation()`
-   — no compaction, pruning, or optimization yet.
-5. **`shortterm.py`, `longterm.py`, `episodic.py`** are empty files — reserved
-   for future specialized memory layers.
-6. **`src/gaia/core/base/` and `src/gaia/core/__init__.py`** are empty —
-   reserved for future shared types.
-7. **`src/app/__init__.py`** is stale and empty — candidate for deletion.
-8. **`fibonacci.py` and `pong.py`** in the repo root are development experiments
-   — unclear if they belong in the committed tree.
+   copy exist in the UI, but SQLCipher is not a dependency — encryption is
+   not yet implemented.
+4. **`src/app/__init__.py`** is stale and empty — candidate for deletion.
+5. **`src/plugins/__init__.py`** is empty — reserved for a future plugin system.
+6. **Memory management.** No compaction, pruning, or optimization of stored
+   facts/events yet.
 
 ---
 
@@ -362,4 +376,6 @@ Dev: `pytest`, `pytest-asyncio`
 
 | Date | What changed |
 |---|---|
-| 2025-10-08 | Added memory backend documentation — SQLite+FTS5 (`sqlite_store.py`) and ChromaDB (`chroma_store.py`) backends, `MemoryStore` ABC protocol, memory management (`management.py`), and backend selection logic in `GaiaTUIApp._init_memory()`. Updated config table with `memory_db` and `memory.backend` keys. Updated slash commands table with `/remember`, `/extract`, `/extract-debug`, `/debug`. Updated Gaia agent section to document `post_turn_extract`, `_extract_facts`, `extract_from_history`, and `FactResult` structured output. Added `AGENT.md` and `test_fts_fix.py` to repo layout. Marked memory as "two full backends implemented" instead of "scaffolded but empty". |
+| 2025-10-08 (Phase 0-1) | Dropped SQLite backend. Added `FileMemoryStore` — flat markdown files with YAML frontmatter and keyword search. Replaced `memory_db`/`"sqlite"` config with `memory_dir`/`"file"`. |
+| 2025-10-08 (Phase 2) | Added `Settings` and `MemoryConfig` frozen dataclasses. `load_config()` now returns `Settings`, `save_config()` accepts `Settings`. All callers updated to dot-notation. `/model` command reassigns settings via `Settings.from_dict()`. |
+| 2025-10-08 | Initial architecture doc — documented SQLite+FTS5 and ChromaDB backends, `MemoryStore` ABC protocol, config flow, Gaia agent, slash commands. |
