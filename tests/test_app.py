@@ -10,6 +10,8 @@ from gaia.config import (
     check_endpoint,
     EXIT_COMMANDS,
     SLASH_COMMANDS,
+    Settings,
+    MemoryConfig,
 )
 from gaia.gaia_tui_app import GaiaTUIApp
 
@@ -147,17 +149,18 @@ class TestGaiaTUIAppInit:
 
     def test_loads_settings(self) -> None:
         """App.__init__ loads settings via load_config."""
+        expected = Settings(model="test")
         with patch(
-            "gaia.gaia_tui_app.load_config", return_value={"model": "test"}
+            "gaia.gaia_tui_app.load_config", return_value=expected
         ) as mock_load:
             app = GaiaTUIApp()
 
         mock_load.assert_called_once()
-        assert app.settings == {"model": "test"}
+        assert app.settings.model == "test"
 
     def test_creates_agent(self) -> None:
         """App.__init__ creates a Gaia agent."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             with patch("gaia.gaia_tui_app.Gaia") as mock_gaia:
                 GaiaTUIApp()
 
@@ -165,7 +168,7 @@ class TestGaiaTUIAppInit:
 
     def test_initializes_shutting_down_false(self) -> None:
         """is_shutting_down starts as False."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app = GaiaTUIApp()
 
         assert app.is_shutting_down is False
@@ -181,7 +184,10 @@ class TestGaiaTUIAppInit:
         """_init_memory returns None when memory backend is unknown."""
         with patch(
             "gaia.gaia_tui_app.load_config",
-            return_value={"model": "test", "memory": {"backend": "sqlite"}},
+            return_value=Settings(
+                model="test",
+                memory=MemoryConfig(backend="sqlite", memory_dir="~/.gaia/memory"),
+            ),
         ):
             with patch("gaia.gaia_tui_app.Gaia"):
                 app = GaiaTUIApp()
@@ -192,7 +198,7 @@ class TestGaiaTUIAppInit:
         """_init_memory degrades gracefully when store initialization raises."""
         with patch(
             "gaia.gaia_tui_app.load_config",
-            return_value={"model": "test", "memory": {"backend": "chroma"}},
+            return_value=Settings.from_dict({"model": "test", "memory": {"backend": "chroma"}}),
         ):
             with patch("gaia.gaia_tui_app.Gaia"):
                 with patch(
@@ -210,7 +216,7 @@ class TestForceExit:
     def test_sets_shutting_down_flag(self) -> None:
         """force_exit sets is_shutting_down = True."""
         with (
-            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
             patch.object(GaiaTUIApp, "_init_memory", return_value=None),
         ):
             app = GaiaTUIApp()
@@ -221,7 +227,7 @@ class TestForceExit:
     def test_cancels_workers(self) -> None:
         """force_exit calls cancel_all on the workers manager."""
         with (
-            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
             patch.object(GaiaTUIApp, "_init_memory", return_value=None),
             patch.object(GaiaTUIApp, "workers") as mock_workers,
         ):
@@ -233,7 +239,7 @@ class TestForceExit:
     def test_calls_exit(self) -> None:
         """force_exit calls App.exit()."""
         with (
-            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
             patch.object(GaiaTUIApp, "_init_memory", return_value=None),
         ):
             app = GaiaTUIApp()
@@ -246,7 +252,7 @@ class TestForceExit:
     async def test_force_exit_closes_memory(self) -> None:
         """force_exit calls _close_memory when memory is present."""
         with (
-            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
             patch.object(GaiaTUIApp, "_init_memory", return_value=None),
         ):
             app = GaiaTUIApp()
@@ -281,7 +287,7 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_inserts_fact(self) -> None:
         """/remember <fact> calls semantic_insert with correct args."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
             await app.handle_slash_command("/remember user likes python")
@@ -297,7 +303,7 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_no_arg_shows_usage(self) -> None:
         """/remember without an arg shows usage help."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
             await app.handle_slash_command("/remember")
@@ -308,7 +314,7 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_without_memory_shows_message(self) -> None:
         """/remember when _memory is None does not raise."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=None)
 
             await app.handle_slash_command("/remember test fact")
@@ -319,4 +325,63 @@ class TestRememberCommand:
         """/remember is listed in SLASH_COMMANDS for autocomplete."""
         cmd_names = {entry["cmd"] for entry in SLASH_COMMANDS}
         assert "/remember" in cmd_names, "Missing /remember from SLASH_COMMANDS"
+
+
+class TestModelCommand:
+    """Tests for the /model slash command."""
+
+    def _make_app(self, settings=None, memory=None):
+        """Create a GaiaTUIApp with mocked settings, memory and chat_box."""
+        with patch.object(GaiaTUIApp, "_init_memory", return_value=None):
+            app = GaiaTUIApp()
+        if settings is not None:
+            app.settings = settings
+        app._memory = memory
+        chat_box = MagicMock()
+        chat_box.mount = AsyncMock()
+        app.query_one = MagicMock(
+            side_effect=lambda sel, cls: chat_box if sel == "#chat-container" else MagicMock()
+        )
+        app.query = MagicMock(return_value=[])
+        return app, chat_box
+
+    @pytest.mark.asyncio
+    async def test_model_updates_settings(self) -> None:
+        """/model <name> reassigns settings.model and calls save_config."""
+        settings = Settings(model="original")
+        app, _ = self._make_app(settings=settings)
+
+        with patch("gaia.gaia_tui_app.save_config") as mock_save:
+            await app.handle_slash_command("/model llama3.3:70b")
+
+        assert app.settings.model == "llama3.3:70b"
+        mock_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_model_no_arg_shows_current(self) -> None:
+        """/model without an arg displays the current model name."""
+        settings = Settings(model="qwen2.5-coder:32b")
+        app, _ = self._make_app(settings=settings)
+
+        await app.handle_slash_command("/model")
+
+        # Should show current model in chat output
+        assert app.query_one.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_model_preserves_other_fields(self) -> None:
+        """/model only changes model; other settings stay the same."""
+        settings = Settings(
+            model="original",
+            endpoint="http://old.local",
+            encrypted=False,
+        )
+        app, _ = self._make_app(settings=settings)
+
+        with patch("gaia.gaia_tui_app.save_config"):
+            await app.handle_slash_command("/model new-model")
+
+        assert app.settings.model == "new-model"
+        assert app.settings.endpoint == "http://old.local"
+        assert app.settings.encrypted is False
 

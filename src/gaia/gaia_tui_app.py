@@ -18,6 +18,8 @@ from gaia.core.agent import Gaia
 from gaia.core.memory import ChromaMemoryStore, FileMemoryStore
 from gaia.config import (
     DEFAULT_SETTINGS,
+    SETTINGS_FILE,
+    Settings,
     load_config,
     save_config,
     check_endpoint,
@@ -30,8 +32,6 @@ from gaia.settings_modal import SettingsModal
 from datetime import datetime
 
 logger = logging.getLogger("gaia.tui")
-
-SETTINGS_FILE = Path("settings.json")
 
 
 def _setup_logging() -> None:
@@ -249,7 +249,7 @@ class GaiaTUIApp(App):
         self.settings = load_config()
         self._memory = self._init_memory()
         self.__core_agent = Gaia(
-            self.settings.get("system_prompt"),
+            self.settings.system_prompt,
             memory=self._memory,
         )
         self.is_shutting_down = False
@@ -262,11 +262,11 @@ class GaiaTUIApp(App):
         ``asyncio.run()`` for the one-shot ``initialize()`` call since no
         event loop exists in ``__init__``.
         """
-        backend = self.settings.get("memory", {}).get("backend", "file")
+        backend = self.settings.memory.backend
         try:
             match backend:
                 case "file":
-                    memory_dir = self.settings.get("memory_dir", "~/.gaia/memory")
+                    memory_dir = self.settings.memory.memory_dir
                     store = FileMemoryStore(memory_dir)
                 case "chroma":
                     store = ChromaMemoryStore()
@@ -397,10 +397,10 @@ class GaiaTUIApp(App):
         try:
             config_info = self.query_one("#header-config-info", Static)
             enc_label = (
-                "SQLCipher" if self.settings.get("encrypted", True) else "DISABLED"
+                "SQLCipher" if self.settings.encrypted else "DISABLED"
             )
             config_info.update(
-                f"MODEL: [bold #00f0ff]{self.settings.get('model', 'qwen2.5-coder:32b')}"
+                f"MODEL: [bold #00f0ff]{self.settings.model}"
                 f"[/bold #00f0ff] | VAULT: {enc_label}"
             )
         except Exception:
@@ -409,7 +409,7 @@ class GaiaTUIApp(App):
     @work(exclusive=True)
     async def ping_loop(self) -> None:
         while not self.is_shutting_down:
-            endpoint = self.settings.get("endpoint", "http://localhost:11434")
+            endpoint = self.settings.endpoint
             try:
                 status = await self._check_connection(endpoint)
             except Exception:
@@ -505,7 +505,7 @@ class GaiaTUIApp(App):
 
             case "model":
                 if arg:
-                    self.settings["model"] = arg
+                    self.settings = Settings.from_dict({**self.settings.to_dict(), "model": arg})
                     save_config(self.settings)
                     self._refresh_config_info()
                     await chat_box.mount(
@@ -518,7 +518,7 @@ class GaiaTUIApp(App):
                     await chat_box.mount(
                         ChatTurn(
                             f"[bold #00f0ff]Current Model:[/bold #00f0ff] "
-                            f"{self.settings['model']}\n"
+                            f"{self.settings.model}\n"
                             "Usage: [bold]/model <model_name>[/bold]",
                             classes="agent-msg",
                         )
@@ -530,7 +530,8 @@ class GaiaTUIApp(App):
                     new_config: Dict[str, Any] | None,
                 ) -> None:
                     if new_config:
-                        self.settings.update(new_config)
+                        merged = {**self.settings.to_dict(), **new_config}
+                        self.settings = Settings.from_dict(merged)
                         save_config(self.settings)
                         self._refresh_config_info()
 
@@ -541,12 +542,12 @@ class GaiaTUIApp(App):
                                 f"  • Persisted to: "
                                 f"[bold]{SETTINGS_FILE.resolve()}[/bold]\n"
                                 f"  • Model: "
-                                f"[bold]{self.settings['model']}[/bold]\n"
-                                f"  • Endpoint: {self.settings['endpoint']}\n"
+                                f"[bold]{self.settings.model}[/bold]\n"
+                                f"  • Endpoint: {self.settings.endpoint}\n"
                                 f"  • System Prompt: "
-                                f"[dim]{self.settings['system_prompt'][:60]}...[/dim]\n"
+                                f"[dim]{self.settings.system_prompt[:60]}...[/dim]\n"
                                 f"  • Vault Encryption: "
-                                f"{'Enabled' if self.settings['encrypted'] else 'Disabled'}",
+                                f"{'Enabled' if self.settings.encrypted else 'Disabled'}",
                                 classes="agent-msg",
                             ),
                         )
@@ -599,12 +600,12 @@ class GaiaTUIApp(App):
                 status_info = (
                     "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
                     f"  • LLM Endpoint Status: {self.connection_status}\n"
-                    f"  • Model Runtime: {self.settings['model']}\n"
-                    f"  • Host Endpoint: {self.settings['endpoint']}\n"
+                    f"  • Model Runtime: {self.settings.model}\n"
+                    f"  • Host Endpoint: {self.settings.endpoint}\n"
                     f"  • System Prompt Length: "
-                    f"{len(self.settings.get('system_prompt', ''))} chars\n"
+                    f"{len(self.settings.system_prompt)} chars\n"
                     f"  • Vault State: "
-                    f"{'AES-256 (SQLCipher)' if self.settings['encrypted'] else 'Unencrypted Plaintext'}\n"
+                    f"{'AES-256 (SQLCipher)' if self.settings.encrypted else 'Unencrypted Plaintext'}\n"
                     f"  • Config File: {SETTINGS_FILE.resolve()}"
                 )
                 await chat_box.mount(
@@ -775,7 +776,7 @@ class GaiaTUIApp(App):
         await chat_box.mount(agent_widget)
 
         base_prefix = (
-            f"[bold #00f0ff]G.A.I.A. ({self.settings['model']}):[/bold #00f0ff] "
+            f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
         )
         response_accumulator = ""
         dots_states = [".  ", ".. ", "..."]

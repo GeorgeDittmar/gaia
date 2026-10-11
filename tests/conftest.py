@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Generator, Dict, Any
 import pytest
 
-from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE
+from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE, Settings
 
 
 @pytest.fixture()
