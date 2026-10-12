@@ -1,6 +1,7 @@
 """Agent streaming — extracted from GaiaTUIApp.run_agent_execution."""
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from textual.containers import ScrollableContainer
@@ -63,16 +64,28 @@ async def run_agent_stream(app: "GaiaTUIApp", prompt: str) -> str:
             response_accumulator += token
             agent_widget.update(base_prefix + response_accumulator)
             chat_box.scroll_end()
-    finally:
+    except Exception as exc:
+        # Cancel waiting animation before showing error
         if not anim_task.done():
             anim_task.cancel()
             try:
                 await anim_task
             except asyncio.CancelledError:
                 pass
-
-    agent_widget.update(base_prefix + response_accumulator)
-    chat_box.scroll_end()
+        error_msg = (
+            f"[bold #ff007f]⚠ Agent Error[/bold #ff007f]\n"
+            f"[dim #8b949e]{type(exc).__name__}: {exc}[/dim #8b949e]\n"
+            f"[dim #8b949e]Endpoint: {app.settings.endpoint} | "
+            f"Model: {app.settings.model}[/dim #8b949e]"
+        )
+        agent_widget.update(error_msg)
+        chat_box.scroll_end()
+        response_accumulator = ""
+        logger = logging.getLogger("gaia.tui")
+        logger.exception("agent streaming failed")
+    else:
+        agent_widget.update(base_prefix + response_accumulator)
+        chat_box.scroll_end()
 
     # Post-turn fact extraction
     app.call_later(app._start_fact_extraction, prompt, response_accumulator)

@@ -22,14 +22,15 @@ from textual.widgets import Input, Static
 
 from gaia.command_input import CommandInput
 from gaia.config import (
+    AVAILABLE_MODELS,
     check_endpoint,
     load_config,
 )
 from gaia.core.agent import Gaia
 from gaia.core.memory.factory import MemoryFactory
+from gaia.fact_extraction import start_fact_extraction
 from gaia.help_modal import HelpModal
 from gaia.memory_lifecycle import MemoryLifecycle
-from gaia.fact_extraction import start_fact_extraction
 from gaia.slash_commands import SlashCommandHandler
 from gaia.streaming import run_agent_stream
 
@@ -262,6 +263,7 @@ class GaiaTUIApp(App):
         )
         self._slash_handler = SlashCommandHandler(self)
         self.is_shutting_down = False
+        self.__warn_if_unknown_model()
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
@@ -289,6 +291,16 @@ class GaiaTUIApp(App):
             footer_status.update(f"[STATUS: {new_status}]")
         except Exception:
             pass
+
+    def __warn_if_unknown_model(self) -> None:
+        """Warn the user if the configured model is not in the known model list."""
+        known = {m["arg"] for m in AVAILABLE_MODELS}
+        if self.settings.model not in known:
+            logger.warning(
+                "UNRECOGNIZED MODEL '%s' — not in known models: %s",
+                self.settings.model,
+                ", ".join(sorted(known)),
+            )
 
     def force_exit(self) -> None:
         """Graceful shutdown: close memory, stop workers and exit.
