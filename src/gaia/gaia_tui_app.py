@@ -108,9 +108,48 @@ class GaiaTUIApp(App):
 
     .llm-badge {
         text-style: bold;
-        padding: 0 1;
+        padding: 0 2;
         margin-right: 2;
+        margin-left: 2;
         content-align: center middle;
+        min-width: 30;
+    }
+
+    #llm-status-indicator {
+        height: 1;
+        min-height: 1;
+        padding: 0 2;
+        content-align: center middle;
+        min-width: 40;
+    }
+
+    .indicator-online {
+        background: #238636;
+        color: #ffffff;
+        text-style: bold;
+    }
+
+    .indicator-checking {
+        background: #d29922;
+        color: #0d1117;
+        text-style: bold;
+    }
+
+    .indicator-unreachable {
+        background: #da3633;
+        color: #ffffff;
+        text-style: bold;
+        border-left: wide #f85149;
+    }
+
+    #offline-banner {
+        height: 1;
+        background: #da3633;
+        color: #ffffff;
+        content-align: center middle;
+        text-style: bold;
+        dock: top;
+        visibility: hidden;
     }
 
     .status-online {
@@ -270,22 +309,29 @@ class GaiaTUIApp(App):
         await MemoryLifecycle.close(self._memory)
 
     def watch_connection_status(self, new_status: str) -> None:
-        """Reactive watcher that safely updates the status badge once mounted."""
+        """Reactive watcher that safely updates the status indicator and banner."""
         if not self.is_mounted:
             return
         try:
-            badge = self.query_one("#llm-status-badge", Static)
-            badge.update(f"LLM: {new_status}")
-            badge.remove_class(
-                "status-online", "status-checking", "status-unreachable"
+            indicator = self.query_one("#llm-status-indicator", Static)
+            indicator.remove_class(
+                "indicator-online", "indicator-checking", "indicator-unreachable"
             )
+            indicator.update(f"[bold]{new_status}[/bold]")
 
             if new_status == "ONLINE":
-                badge.add_class("status-online")
+                indicator.add_class("indicator-online")
+                # Hide offline banner
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(False)
             elif new_status == "CHECKING...":
-                badge.add_class("status-checking")
+                indicator.add_class("indicator-checking")
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(False)
             else:
-                badge.add_class("status-unreachable")
+                indicator.add_class("indicator-unreachable")
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(True)
 
             footer_status = self.query_one("#footer-status", Static)
             footer_status.update(f"[STATUS: {new_status}]")
@@ -331,11 +377,17 @@ class GaiaTUIApp(App):
             )
             yield Static("", classes="spacer")
             yield Static(
-                f"LLM: {self.connection_status}",
-                classes="llm-badge status-checking",
-                id="llm-status-badge",
+                f"[bold]{self.connection_status}[/bold]",
+                classes="indicator-checking",
+                id="llm-status-indicator",
             )
             yield Static("", id="header-config-info", classes="header-info")
+
+        yield Static(
+            "[bold red]⚠ LLM UNREACHABLE — cannot connect to the configured endpoint. "
+            "Check your settings or verify the server is running.[/bold red]",
+            id="offline-banner",
+        )
 
         with ScrollableContainer(id="chat-container"):
             yield Static(

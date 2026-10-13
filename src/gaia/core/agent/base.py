@@ -200,6 +200,7 @@ class Gaia:
 
         # 3. Stream response
         response_chunks: list[str] = []
+        response_text = ""
         try:
             async with self.__core_agent.run_stream(
                 augmented_prompt, message_history=self.__message_hist
@@ -210,8 +211,10 @@ class Gaia:
 
                 self.__message_hist = result.all_messages()
         except Exception:
-            # If streaming fails, still record what we have
+            # Record whatever partial response we have, then re-raise
+            # so the caller knows streaming failed.
             response_text = "".join(response_chunks)
+            raise
         else:
             response_text = "".join(response_chunks)
 
