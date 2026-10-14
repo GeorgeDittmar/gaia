@@ -129,6 +129,7 @@ class Gaia:
                 "  - Each fact must be a complete declarative sentence about the user\n"
                 "  - Skip greetings, pleasantries, or conversational filler\n"
                 "  - Skip facts that are obvious or generic\n"
+                "  - If a fact is clearly repeated from earlier in the conversation, skip it\n"
                 "  - If nothing extractable is found, return an empty facts list\n"
                 "  - Set confidence high (0.8-1.0) for explicit statements, lower (0.5-0.7) for inferred\n"
             ),

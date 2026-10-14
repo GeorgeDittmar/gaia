@@ -6,7 +6,6 @@ Business logic is extracted into separate modules:
 - ``slash_commands`` — slash command dispatch
 - ``streaming`` — agent streaming loop
 - ``memory_lifecycle`` — memory store initialisation and shutdown
-- ``fact_extraction`` — post-turn fact extraction pipeline
 """
 
 import asyncio
@@ -28,7 +27,6 @@ from gaia.config import (
 )
 from gaia.core.agent import Gaia
 from gaia.core.memory.factory import MemoryFactory
-from gaia.fact_extraction import start_fact_extraction
 from gaia.help_modal import HelpModal
 from gaia.memory_lifecycle import MemoryLifecycle
 from gaia.slash_commands import SlashCommandHandler
@@ -302,7 +300,9 @@ class GaiaTUIApp(App):
         )
         self._slash_handler = SlashCommandHandler(self)
         self.is_shutting_down = False
+        self._turn_count = 0
         self.__warn_if_unknown_model()
+        self._schedule_startup_extraction()
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
@@ -348,6 +348,30 @@ class GaiaTUIApp(App):
                 ", ".join(sorted(known)),
             )
 
+    # ── Fact extraction scheduling ─────────────────────────────────
+
+    _EXTRACT_EVERY_N_TURNS = 3
+
+    def _schedule_startup_extraction(self) -> None:
+        """Extract facts from any episodic memory that hasn't been processed yet."""
+        if self._memory is None:
+            return
+        self.call_after_refresh(self._run_periodic_extraction)
+
+    @work(exclusive=False, thread=False)
+    async def _run_periodic_extraction(self) -> None:
+        """Batch-extract facts from episodic memory every N turns."""
+        if self._memory is None:
+            return
+        try:
+            count = await self._GaiaTUIApp__core_agent.extract_from_history(
+                max_turns=10,
+            )
+            if count > 0:
+                logger.info("periodic extraction saved %d facts", count)
+        except Exception:
+            logger.exception("periodic extraction failed")
+
     def force_exit(self) -> None:
         """Graceful shutdown: close memory, stop workers and exit.
 
@@ -357,6 +381,8 @@ class GaiaTUIApp(App):
         is active, falling back to ``asyncio.run()`` otherwise.
         """
         self.is_shutting_down = True
+        # Final periodic extraction before shutdown
+        self._schedule_shutdown_extraction()
         if self._memory is not None:
             try:
                 loop = asyncio.get_running_loop()
@@ -366,6 +392,16 @@ class GaiaTUIApp(App):
                 asyncio.run(self._close_memory())
         self.workers.cancel_all()
         self.exit()
+
+    def _schedule_shutdown_extraction(self) -> None:
+        """Run batch extraction one last time before the session ends."""
+        if self._memory is None:
+            return
+        try:
+            # @work methods are started by calling them directly
+            self._run_periodic_extraction()
+        except Exception:
+            pass  # Best effort during shutdown
 
     def action_quit(self) -> None:
         self.force_exit()
@@ -543,6 +579,9 @@ class GaiaTUIApp(App):
             await self._slash_handler.handle_slash_command(user_text)
             return
 
+        # Track turns for periodic fact extraction
+        self._turn_count += 1
+
         chat_box = self.query_one("#chat-container", ScrollableContainer)
         await chat_box.mount(
             ChatTurn(
@@ -559,6 +598,11 @@ class GaiaTUIApp(App):
         """Delegate to the streaming module, then trigger post-turn extraction."""
         await run_agent_stream(self, prompt)
 
-    def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
-        """Launch post-turn fact extraction (delegated to fact_extraction module)."""
-        start_fact_extraction(self, user_prompt, agent_response)
+        # Periodic batch extraction after every N agent responses
+        if self._memory is not None and (
+            self._turn_count % self._EXTRACT_EVERY_N_TURNS == 0
+        ):
+            logger.info(
+                "turn %d — triggering periodic fact extraction", self._turn_count
+            )
+            self.call_later(self._run_periodic_extraction)
