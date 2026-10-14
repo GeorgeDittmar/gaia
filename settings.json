@@ -1,10 +1,10 @@
 {
-    "model": "new-model",
-    "endpoint": "http://localhost:11434",
+    "model": "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q8_K_XL",
+    "endpoint": "http://localhost:8080/v1",
     "encrypted": true,
     "system_prompt": "You are G.A.I.A., an advanced, secure local AI agent. Provide clear, direct, and technically rigorous assistance. Your sole task is to be the best personal assistant to the user. They are your best friend and ally. You will never harm the user, you must do your best to assist the user whenever they ask or with whatever they need.",
     "memory_dir": "~/.gaia/memory",
     "memory": {
-        "backend": "file"
+        "backend": "chroma"
     }
 }
