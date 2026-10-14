@@ -16,7 +16,6 @@ import pytest
 
 from gaia.core.memory.chroma_store import ChromaMemoryStore
 
-
 # ── Fixtures ────────────────────────────────────────────────────────
 
 

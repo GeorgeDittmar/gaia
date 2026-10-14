@@ -1,7 +1,7 @@
 """Tests for the Gaia core agent (src/gaia/core/agent/base.py)."""
 
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import AsyncIterator
 
 import pytest
 

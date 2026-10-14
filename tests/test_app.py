@@ -1,17 +1,16 @@
 """Tests for app-level logic (connection checker, input classification)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from gaia.config import (
+    SLASH_COMMANDS,
+    MemoryConfig,
+    Settings,
+    check_endpoint,
     is_exit_command,
     is_slash_input,
-    check_endpoint,
-    EXIT_COMMANDS,
-    SLASH_COMMANDS,
-    Settings,
-    MemoryConfig,
 )
 from gaia.gaia_tui_app import GaiaTUIApp
 
@@ -74,13 +73,12 @@ class TestCheckEndpoint:
         import urllib.request
 
         # Patch at the module level where it's used
-        with patch.object(urllib.request, "Request") as mock_req:
-            with patch.object(
-                urllib.request, "urlopen"
-            ) as mock_urlopen:
-                self._mock_req = mock_req
-                self._mock_urlopen = mock_urlopen
-                yield
+        with patch.object(urllib.request, "Request") as mock_req, patch.object(
+            urllib.request, "urlopen"
+        ) as mock_urlopen:
+            self._mock_req = mock_req
+            self._mock_urlopen = mock_urlopen
+            yield
 
     @pytest.mark.asyncio
     async def test_returns_online_on_success(self) -> None:
@@ -188,9 +186,8 @@ class TestGaiaTUIAppInit:
                 model="test",
                 memory=MemoryConfig(backend="sqlite", memory_dir="~/.gaia/memory"),
             ),
-        ):
-            with patch("gaia.gaia_tui_app.Gaia"):
-                app = GaiaTUIApp()
+        ), patch("gaia.gaia_tui_app.Gaia"):
+            app = GaiaTUIApp()
 
         assert app._memory is None
 

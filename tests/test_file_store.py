@@ -1,9 +1,7 @@
 """Tests for the flat-file MemoryStore implementation."""
 
 import asyncio
-import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,7 +12,6 @@ from gaia.core.memory.file_store import (
     _score_query,
     _tokenize,
 )
-
 
 # ── Frontmatter helpers ─────────────────────────────────────────────
 

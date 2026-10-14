@@ -292,8 +292,9 @@ class GaiaTUIApp(App):
         except Exception:
             logger.exception("memory factory failed — memory disabled")
             self._memory = None
+        from pathlib import Path
         self.__core_agent = Gaia(
-            system_prompt=self.settings.system_prompt,
+            system_prompt=Path('AGENT.md').read_text(),
             model_name=self.settings.model,
             endpoint=self.settings.endpoint,
             memory=self._memory,

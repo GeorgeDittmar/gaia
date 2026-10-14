@@ -1,11 +1,11 @@
 """Tests for Phase 4: MemoryFactory and lazy initialization."""
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from gaia.config import Settings, MemoryConfig
+from gaia.config import MemoryConfig, Settings
 from gaia.gaia_tui_app import GaiaTUIApp
 
 
@@ -60,8 +60,8 @@ class TestMemoryFactoryCreatesChromaWhenConfigured:
         with (
             patch("gaia.gaia_tui_app.MemoryFactory"),
         ):
-            from gaia.core.memory.factory import MemoryFactory
             from gaia.core.memory.chroma_store import ChromaMemoryStore
+            from gaia.core.memory.factory import MemoryFactory
 
             settings = Settings(
                 memory=MemoryConfig(backend="chroma", memory_dir="~/.gaia/memory")

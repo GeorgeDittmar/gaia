@@ -1,12 +1,12 @@
 """Shared fixtures for the G.A.I.A. test suite."""
 
 import json
-import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Dict, Any
+
 import pytest
 
-from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE, Settings
+from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE
 
 
 @pytest.fixture()
@@ -35,7 +35,6 @@ def empty_settings(settings_path: Path) -> Path:
 
     Returns the path to the written file so callers can assert it was created.
     """
-    import gaia.config as config_mod
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(DEFAULT_SETTINGS, f, indent=4)
     return settings_path

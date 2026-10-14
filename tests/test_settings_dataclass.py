@@ -1,6 +1,6 @@
 """Tests for the Settings and MemoryConfig dataclasses."""
 
-from gaia.config import DEFAULT_SETTINGS, Settings, MemoryConfig
+from gaia.config import DEFAULT_SETTINGS, MemoryConfig, Settings
 
 
 class TestMemoryConfig:
