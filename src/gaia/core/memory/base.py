@@ -52,6 +52,17 @@ class MemoryStore(ABC):
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
         """Full-text search on semantic facts."""
 
+    @abstractmethod
+    async def semantic_similarity_search(
+        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+    ) -> bool:
+        """Check if any fact is similar to *query*.
+
+        Returns True if a fact with similarity >= threshold exists.
+        ChromaDB uses cosine similarity on embeddings; flat-file stores
+        fall back to Jaccard token overlap.
+        """
+
     # ── Episodic memory ──────────────────────────────────────────
 
     @abstractmethod

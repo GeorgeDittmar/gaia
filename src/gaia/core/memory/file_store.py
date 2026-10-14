@@ -293,6 +293,31 @@ class FileMemoryStore(MemoryStore):
             })
         return records
 
+    async def semantic_similarity_search(
+        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+    ) -> bool:
+        """Check if any fact is similar to *query*.
+
+        Falls back to Jaccard token overlap since the file store
+        has no embeddings.  distance_threshold here is the minimum
+        Jaccard score to consider a match.
+        """
+        results = self._scoring_search("semantic", query, limit)
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return False
+
+        for _score, _ts, _meta, body in results:
+            body_tokens = self._tokenize(body)
+            if not body_tokens:
+                continue
+            intersection = query_tokens & body_tokens
+            union = query_tokens | body_tokens
+            jaccard = len(intersection) / len(union) if union else 0.0
+            if jaccard >= distance_threshold:
+                return True
+        return False
+
     # ── Episodic operations ──────────────────────────────────────
 
     async def episodic_record(

@@ -265,8 +265,12 @@ class Gaia:
             saved = 0
             skipped = 0
             for fact_text, category, confidence in facts:
-                # Dedup check: search for similar facts already stored
-                if await self._is_duplicate(fact_text):
+                # Dedup check: query memory for similar facts
+                if await self._memory.semantic_similarity_search(
+                    fact_text,
+                    limit=5,
+                    distance_threshold=0.75,
+                ):
                     skipped += 1
                     logger.info("skipping duplicate — %s", fact_text[:60])
                     continue
@@ -288,52 +292,6 @@ class Gaia:
         except Exception:
             logger.exception("extraction FAILED")
             return 0
-
-    @staticmethod
-    def _tokenize(text: str) -> set[str]:
-        """Tokenize text for similarity comparison."""
-        import re
-        return {
-            t for t in re.split(r"[^a-z0-9]+", text.lower())
-            if t
-        }
-
-    async def _is_duplicate(self, fact_text: str, threshold: float = 0.75) -> bool:
-        """Check if a similar fact already exists in semantic memory.
-
-        Uses Jaccard similarity on tokenized text. Returns True if
-        any existing fact has similarity >= threshold.
-        """
-        try:
-            existing = await self._memory.semantic_search(
-                query=fact_text, limit=5
-            )
-        except Exception:
-            return False
-
-        new_tokens = self._tokenize(fact_text)
-        if not new_tokens:
-            return False
-
-        for record in existing:
-            body = record.get("content", "")
-            existing_tokens = self._tokenize(body)
-            if not existing_tokens:
-                continue
-
-            intersection = new_tokens & existing_tokens
-            union = new_tokens | existing_tokens
-            jaccard = len(intersection) / len(union) if union else 0.0
-
-            if jaccard >= threshold:
-                logger.debug(
-                    "duplicate found (jaccard=%.2f): %s",
-                    jaccard,
-                    fact_text[:60],
-                )
-                return True
-
-        return False
 
     async def _extract_facts(
         self,

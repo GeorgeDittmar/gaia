@@ -232,6 +232,33 @@ class ChromaMemoryStore(MemoryStore):
 
         return records
 
+    async def semantic_similarity_search(
+        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+    ) -> bool:
+        """Check if any fact is semantically similar to *query*.
+
+        ChromaDB returns distances in its query response — cosine
+        distance where 0 = identical, 2 = opposite.  If any returned
+        distance is <= threshold, the fact is a near-duplicate.
+        """
+        collection = self._collections["semantic_facts"]
+        result = await self._thread(
+            lambda: collection.query(
+                query_texts=[query],
+                n_results=limit,
+                include=["distances"],
+            )
+        )
+
+        distances = result.get("distances", [])
+        if not distances or not distances[0]:
+            return False
+
+        # Chroma default is cosine distance: 0 = identical, 2 = opposite
+        # Lower distance = more similar.  Threshold 0.8 means
+        # "anything with cosine distance <= 0.8 is considered duplicate"
+        return any(d <= distance_threshold for d in distances[0])
+
     # ── Episodic operations ──────────────────────────────────────
 
     async def episodic_record(
