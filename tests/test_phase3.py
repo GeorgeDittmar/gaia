@@ -279,8 +279,8 @@ class TestExtractionAgentUsesSameConfig:
 # ── Test 7: reconfigure rebuilds both agents ─────────────────────────
 
 
-class TestReconfigureRebuildsBothAgents:
-    """reconfigure() rebuilds the extraction agent, not just the main one."""
+class TestReconfigureRebuildsAllAgents:
+    """reconfigure() rebuilds the main, extraction, and planner agents."""
 
     def test_reconfigure_rebuilds_extraction_agent(self):
         """After reconfigure(), all agents use the new model."""
@@ -338,3 +338,251 @@ class TestSettingsModalReconfigure:
             model_name="new-model",
             endpoint="http://old:11434",
         )
+
+
+# ── Test 10: planner agent ───────────────────────────────────────────
+
+
+def _make_token_stream(tokens):
+    """Factory returning an async generator bound to *tokens*."""
+    async def _gen(*_args, **_kwargs):
+        for t in tokens:
+            yield t
+    return _gen
+
+
+def _make_mock_result(tokens):
+    """Build a run_stream result mock yielding *tokens*.
+
+    stream_text is an async generator so pydantic-ai's
+    ``async for chunk in result.stream_text()`` works.
+    """
+    mock_result = MagicMock()
+    mock_result.stream_text = _make_token_stream(tokens)
+    mock_result.all_messages = MagicMock(return_value=[
+        {"role": "user", "content": "test input"},
+        {"role": "assistant", "content": " ".join(tokens)},
+    ])
+    return mock_result
+
+
+def _mock_cm(result_obj):
+    """Build an async context manager mock wrapping *result_obj*."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=result_obj)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+class TestPlannerAgent:
+    """The planner agent decides whether to retrieve from memory per-turn."""
+
+    def test_planner_agent_created_on_init(self):
+        """__planner_agent is built alongside main and extraction agents."""
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel") as mock_model,
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent"),
+        ):
+            from gaia.core.agent.base import Gaia
+            Gaia("You are helpful.", model_name="test", endpoint="http://x:1/v1")
+            # 3 calls: main + extraction + planner
+            assert mock_model.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retrieve_true_triggers_memory_search(self):
+        """When planner returns retrieve=True, memory is searched for each query."""
+        from gaia.core.agent.base import Gaia, PlannerResult
+
+        mock_mem = MagicMock()
+        mock_mem.semantic_search = AsyncMock(return_value=[
+            {"content": "user likes Python", "confidence": 0.9},
+        ])
+        mock_mem.episodic_record = AsyncMock(return_value="evt-1")
+
+        mock_main_agent = MagicMock()
+        mock_main_agent.run_stream = MagicMock(
+            return_value=_mock_cm(_make_mock_result(["hello", " ", "world"]))
+        )
+
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel"),
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent", return_value=mock_main_agent),
+        ):
+            gaia = Gaia(
+                "You are helpful.",
+                memory=mock_mem,
+            )
+            gaia._Gaia__planner_agent = MagicMock()
+            gaia._Gaia__planner_agent.run = AsyncMock(return_value=MagicMock(
+                output=PlannerResult(
+                    retrieve=True,
+                    queries=["Python preferences", "tech stack"],
+                    note="",
+                ),
+            ))
+            gaia._Gaia__message_hist = [{"role": "user", "content": "initial"}]
+
+            chunks = [c async for c in gaia.ainteract("What should I use?")]
+
+            assert len(chunks) == 3
+            assert gaia._Gaia__planner_agent.run.call_count == 1
+            assert mock_mem.semantic_search.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retrieve_false_skips_memory_search(self):
+        """When planner returns retrieve=False, no memory search runs."""
+        from gaia.core.agent.base import Gaia, PlannerResult
+
+        mock_mem = MagicMock()
+        mock_mem.episodic_record = AsyncMock(return_value="evt-1")
+
+        mock_main_agent = MagicMock()
+        mock_main_agent.run_stream = MagicMock(
+            return_value=_mock_cm(_make_mock_result(["ok"]))
+        )
+
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel"),
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent", return_value=mock_main_agent),
+        ):
+            gaia = Gaia(
+                "You are helpful.",
+                memory=mock_mem,
+            )
+            gaia._Gaia__planner_agent = MagicMock()
+            gaia._Gaia__planner_agent.run = AsyncMock(return_value=MagicMock(
+                output=PlannerResult(
+                    retrieve=False,
+                    queries=[],
+                    note="",
+                ),
+            ))
+            gaia._Gaia__message_hist = [{"role": "user", "content": "hi"}]
+
+            chunks = [c async for c in gaia.ainteract("hi")]
+
+            assert mock_mem.semantic_search.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_planner_failure_does_not_break_turn(self):
+        """If the planner call raises, the turn still completes."""
+        from gaia.core.agent.base import Gaia
+
+        mock_mem = MagicMock()
+        mock_mem.episodic_record = AsyncMock(return_value="evt-1")
+
+        mock_main_agent = MagicMock()
+        mock_main_agent.run_stream = MagicMock(
+            return_value=_mock_cm(_make_mock_result(["answer"]))
+        )
+
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel"),
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent", return_value=mock_main_agent),
+        ):
+            gaia = Gaia(
+                "You are helpful.",
+                memory=mock_mem,
+            )
+            gaia._Gaia__planner_agent = MagicMock()
+            gaia._Gaia__planner_agent.run = AsyncMock(
+                side_effect=ValueError("boom")
+            )
+            gaia._Gaia__message_hist = [{"role": "user", "content": "test"}]
+
+            chunks = [c async for c in gaia.ainteract("does this still work?")]
+
+            assert len(chunks) == 1
+            assert chunks[0] == "answer"
+
+    @pytest.mark.asyncio
+    async def test_planner_note_saved_to_episodic_memory(self):
+        """When planner returns a note, it is saved as a planner_note event."""
+        from gaia.core.agent.base import Gaia, PlannerResult
+
+        mock_mem = MagicMock()
+        mock_mem.episodic_record = AsyncMock(return_value="evt-1")
+
+        mock_main_agent = MagicMock()
+        mock_main_agent.run_stream = MagicMock(
+            return_value=_mock_cm(_make_mock_result(["got it"]))
+        )
+
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel"),
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent", return_value=mock_main_agent),
+        ):
+            gaia = Gaia(
+                "You are helpful.",
+                memory=mock_mem,
+            )
+            gaia._Gaia__planner_agent = MagicMock()
+            gaia._Gaia__planner_agent.run = AsyncMock(return_value=MagicMock(
+                output=PlannerResult(
+                    retrieve=False,
+                    queries=[],
+                    note="user switched from file store to ChromaDB",
+                ),
+            ))
+            gaia._Gaia__message_hist = [{"role": "user", "content": "test"}]
+
+            [c async for c in gaia.ainteract("I just switched to ChromaDB")]
+
+            # episodic_record called twice: once for conversation_turn,
+            # once for planner_note
+            assert mock_mem.episodic_record.call_count == 2
+            calls = mock_mem.episodic_record.call_args_list
+            assert calls[1][0][0] == "planner_note"
+            assert calls[1][1]["payload"]["note"] == (
+                "user switched from file store to ChromaDB"
+            )
+
+    @pytest.mark.asyncio
+    async def test_dedup_across_queries(self):
+        """Results from multiple planner queries are deduplicated."""
+        from gaia.core.agent.base import Gaia, PlannerResult
+
+        mock_mem = MagicMock()
+        # Both queries return the same fact
+        mock_mem.semantic_search = AsyncMock(side_effect=[
+            [{"content": "user likes Python", "confidence": 0.9}],
+            [{"content": "user likes Python", "confidence": 0.9}],
+        ])
+        mock_mem.episodic_record = AsyncMock(return_value="evt-1")
+
+        mock_main_agent = MagicMock()
+        mock_main_agent.run_stream = MagicMock(
+            return_value=_mock_cm(_make_mock_result(["ok"]))
+        )
+
+        with (
+            patch("gaia.core.agent.base.OpenAIChatModel"),
+            patch("gaia.core.agent.base.OpenAIProvider"),
+            patch("gaia.core.agent.base.Agent", return_value=mock_main_agent),
+        ):
+            gaia = Gaia(
+                "You are helpful.",
+                memory=mock_mem,
+            )
+            gaia._Gaia__planner_agent = MagicMock()
+            gaia._Gaia__planner_agent.run = AsyncMock(return_value=MagicMock(
+                output=PlannerResult(
+                    retrieve=True,
+                    queries=["Python", "favorite language"],
+                    note="",
+                ),
+            ))
+            gaia._Gaia__message_hist = [{"role": "user", "content": "hi"}]
+
+            [c async for c in gaia.ainteract("hi")]
+
+            assert mock_mem.semantic_search.call_count == 2
+            call_args = mock_main_agent.run_stream.call_args
+            # augmented_prompt is the first positional argument
+            augmented_prompt = call_args[0][0]
+            assert augmented_prompt.count("user likes Python") == 1

@@ -309,8 +309,7 @@ class Gaia:
         except Exception:
             response_text = "".join(response_chunks)
             raise
-        else:
-            response_text = "".join(response_chunks)
+        response_text = "".join(response_chunks)
 
         # 5. Record episodic memory
         if self._memory is not None and response_text:
