@@ -60,15 +60,41 @@ class FactResult(BaseModel):
     facts: list[FactEntry]
 
 
+class PlannerResult(BaseModel):
+    """Planner decision: whether to retrieve from memory, what to search, and observations."""
+
+    retrieve: bool = Field(
+        description=(
+            "Whether this query benefits from looking up user memory. "
+            "Use false for simple queries (greetings, one-word, obvious answers)."
+        ),
+    )
+    queries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Search phrases for memory retrieval. 1-3 short phrases, "
+            "or empty list if retrieve=False."
+        ),
+    )
+    note: str = Field(
+        default="",
+        description=(
+            "A new observation about the user to save for later. "
+            "Leave empty if nothing noteworthy."
+        ),
+    )
+
+
 # ── Extraction agent (reusable, structured output) ─────────────────
 
 class Gaia:
     """Memory-aware agent harness.
 
-    Before each user message, the agent queries semantic memory for
-    relevant facts and injects them into the prompt. After responding,
-    both the user message and agent response are recorded as episodic
-    memory.
+    Before each user message, a lightweight planner decides whether to
+    retrieve from semantic memory and what to search for. Retrieved facts
+    are injected into the prompt. After responding, both the user message
+    and agent response are recorded as episodic memory. The planner also
+    saves observations about the user to episodic memory when noteworthy.
 
     Args:
         system_prompt: Instructions that shape the agent's behaviour.
@@ -104,6 +130,39 @@ class Gaia:
         self._memory = memory
         self.__conv_id = _generate_conversation_id()
         self.__extraction_agent = self._make_extraction_agent()
+        self.__planner_agent = self._make_planner_agent()
+
+    def _make_planner_agent(self) -> Agent[PlannerResult]:
+        """Build a lightweight planning agent with structured output.
+
+        Decides whether the current query benefits from memory retrieval,
+        what to search for, and whether to note anything new.
+        """
+        model = OpenAIChatModel(
+            self._model_name,
+            provider=OpenAIProvider(
+                base_url=self._endpoint,
+                api_key=self._api_key,
+            ),
+        )
+        return Agent(
+            model,
+            instructions=(
+                "You are a memory-aware planning assistant. "
+                "Given the user's message and recent conversation context, "
+                "decide whether to look up relevant facts from the user's memory.\n\n"
+                "Rules:\n"
+                "  - retrieve: true for questions about tools, preferences, recommendations,\n"
+                "    or anything that benefits from knowing the user. false for greetings,\n"
+                "    simple one-word queries, or obvious factual questions.\n"
+                "  - queries: 1-3 short search phrases (e.g. 'CLI tool preferences', "
+                "'Python tech stack'). Keep them general — they are vector-searched.\n"
+                "  - note: save a brief observation about the user if they revealed "
+                "something new (preferences, context, tech stack changes). Leave empty "
+                "for routine messages.\n"
+            ),
+            output_type=PlannerResult,
+        )
 
     def _make_extraction_agent(self) -> Agent[FactResult]:
         """Build a dedicated pydantic-ai agent with structured output for fact extraction.
@@ -143,7 +202,7 @@ class Gaia:
         ``self.reconfigure(model_name=new_model)`` without
         worrying about clobbering the endpoint.
 
-        Both the main agent and the extraction agent are rebuilt
+        The main agent, extraction agent, and planner agent are rebuilt
         with the new configuration.
         """
         if model_name:
@@ -162,6 +221,7 @@ class Gaia:
         )
         self.__core_agent = Agent(model, instructions=self._system_prompt)
         self.__extraction_agent = self._make_extraction_agent()
+        self.__planner_agent = self._make_planner_agent()
         self.__message_hist = []
 
     # ── Public API ─────────────────────────────────────────────────
@@ -169,25 +229,60 @@ class Gaia:
     async def ainteract(self, prompt: str) -> AsyncGenerator[str, None]:
         """Interact with the agent in a single turn.
 
-        1. Query semantic memory for relevant facts.
-        2. Assemble an augmented prompt.
-        3. Stream the model response.
-        4. Record the turn as episodic memory.
+        1. Plan: decide if memory retrieval would help and what to search.
+        2. Retrieve relevant semantic facts (if planner says so).
+        3. Assemble an augmented prompt.
+        4. Stream the model response.
+        5. Record the turn as episodic memory.
+        6. Save any planner-observed notes to episodic memory.
 
         Yields:
             Text deltas from the model.
         """
-        # 1. Retrieve relevant semantic facts
+        # 1. Planner — decide whether to retrieve from memory
         context_blocks: list[str] = []
-        if self._memory is not None:
-            facts = await self._memory.semantic_search(prompt, limit=5)
-            for fact in facts:
-                content = fact.get("content", "")
-                confidence = fact.get("confidence", 1.0)
-                if content and confidence >= 0.5:
-                    context_blocks.append(f"- {content}")
+        planner_note: str = ""
+        if self._memory is not None and self.__message_hist:
+            try:
+                recent = self.__message_hist[-10:]
+                history_text = ""
+                for msg in recent:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    history_text += f"{role}: {content[:200]}\n"
 
-        # 2. Build augmented prompt
+                planner_input = (
+                    f"User message: {prompt}\n"
+                    f"Recent conversation context:\n{history_text}"
+                )
+                planner_result = await self.__planner_agent.run(planner_input)
+                planner_output: PlannerResult = planner_result.output
+
+                if planner_output.retrieve and planner_output.queries:
+                    # 2. Retrieve relevant semantic facts for each query
+                    for query in planner_output.queries:
+                        facts = await self._memory.semantic_search(query, limit=3)
+                        for fact in facts:
+                            content = fact.get("content", "")
+                            confidence = fact.get("confidence", 1.0)
+                            if content and confidence >= 0.5:
+                                context_blocks.append(f"- {content}")
+                    # Deduplicate by content
+                    seen = set()
+                    unique_blocks: list[str] = []
+                    for block in context_blocks:
+                        if block not in seen:
+                            seen.add(block)
+                            unique_blocks.append(block)
+                    context_blocks = unique_blocks
+
+                planner_note = planner_output.note
+            except Exception:
+                logger.exception(
+                    "planner failed — continuing without memory retrieval"
+                )
+
+        # 3. Build augmented prompt
         if context_blocks:
             augmented_prompt = (
                 "[Relevant stored facts]\n"
@@ -199,7 +294,7 @@ class Gaia:
         else:
             augmented_prompt = prompt
 
-        # 3. Stream response
+        # 4. Stream response
         response_chunks: list[str] = []
         response_text = ""
         try:
@@ -212,14 +307,12 @@ class Gaia:
 
                 self.__message_hist = result.all_messages()
         except Exception:
-            # Record whatever partial response we have, then re-raise
-            # so the caller knows streaming failed.
             response_text = "".join(response_chunks)
             raise
         else:
             response_text = "".join(response_chunks)
 
-        # 4. Record episodic memory
+        # 5. Record episodic memory
         if self._memory is not None and response_text:
             try:
                 await self._memory.episodic_record(
@@ -233,8 +326,19 @@ class Gaia:
                     },
                 )
             except Exception:
-                # Memory recording is best-effort; never block the response
                 pass
+
+        # 6. Save planner-observed notes to episodic memory
+        if planner_note and self._memory is not None:
+            try:
+                await self._memory.episodic_record(
+                    "planner_note",
+                    self.__conv_id,
+                    summary=planner_note[:80],
+                    payload={"note": planner_note},
+                )
+            except Exception:
+                logger.exception("failed to save planner note")
 
     # ── Post-turn fact extraction ──────────────────────────────────────
 

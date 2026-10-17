@@ -70,11 +70,11 @@ class TestGaiaAcceptsCustomModelAndEndpoint:
                 endpoint="http://custom:9999/v1",
             )
 
-            # Both agents should call OpenAIChatModel with the same model
-            assert mock_model.call_count == 2
-            assert mock_provider.call_count == 2
+            # Main agent, extraction agent, and planner agent
+            assert mock_model.call_count == 3
+            assert mock_provider.call_count == 3
 
-            for i in range(2):
+            for i in range(3):
                 assert mock_model.call_args_list[i][0][0] == "test-model"
                 pkw = _get_provider_call_args(mock_provider, i)
                 assert pkw["base_url"] == "http://custom:9999/v1"
@@ -101,15 +101,15 @@ class TestGaiaReconfigureChangesModel:
                 endpoint="http://original:8080/v1",
             )
 
-            # 2 calls from __init__ (main + extraction)
+            # 3 calls from __init__ (main + extraction + planner)
             init_model_calls = mock_model.call_count
 
             agent.reconfigure(model_name="new-model")
 
             # Model name should be updated
             assert agent._model_name == "new-model"
-            # New OpenAIChatModel calls: 2 (rebuild main agent + extraction agent)
-            assert mock_model.call_count == init_model_calls + 2
+            # New OpenAIChatModel calls: 3 (rebuild main + extraction + planner)
+            assert mock_model.call_count == init_model_calls + 3
             # Both new calls used "new-model"
             for i in range(init_model_calls, mock_model.call_count):
                 assert mock_model.call_args_list[i][0][0] == "new-model"
@@ -250,7 +250,7 @@ class TestExtractionAgentUsesSameConfig:
     """Both main and extraction agents share the same model/endpoint."""
 
     def test_both_agents_created_with_same_config(self):
-        """OpenAIChatModel is called twice with identical model and endpoint."""
+        """OpenAIChatModel is called three times with identical model and endpoint."""
         with (
             patch("gaia.core.agent.base.OpenAIChatModel") as mock_model,
             patch("gaia.core.agent.base.OpenAIProvider") as mock_provider,
@@ -264,12 +264,12 @@ class TestExtractionAgentUsesSameConfig:
                 endpoint="http://test:1234/v1",
             )
 
-            # Should be exactly 2 calls: main agent + extraction agent
-            assert mock_model.call_count == 2
-            assert mock_provider.call_count == 2
+            # Should be exactly 3 calls: main agent + extraction agent + planner agent
+            assert mock_model.call_count == 3
+            assert mock_provider.call_count == 3
 
-            # Both calls should use the same model_name and endpoint
-            for i in range(2):
+            # All three calls should use the same model_name and endpoint
+            for i in range(3):
                 assert mock_model.call_args_list[i][0][0] == "test-model"
                 pkw = _get_provider_call_args(mock_provider, i)
                 assert pkw["base_url"] == "http://test:1234/v1"
@@ -283,7 +283,7 @@ class TestReconfigureRebuildsBothAgents:
     """reconfigure() rebuilds the extraction agent, not just the main one."""
 
     def test_reconfigure_rebuilds_extraction_agent(self):
-        """After reconfigure(), both agents use the new model."""
+        """After reconfigure(), all agents use the new model."""
         with (
             patch("gaia.core.agent.base.OpenAIChatModel") as mock_model,
             patch("gaia.core.agent.base.OpenAIProvider") as mock_provider,
@@ -298,12 +298,12 @@ class TestReconfigureRebuildsBothAgents:
                 endpoint="http://original:8080/v1",
             )
 
-            init_calls = mock_model.call_count  # 2 (main + extraction)
+            init_calls = mock_model.call_count  # 3 (main + extraction + planner)
 
             agent.reconfigure(model_name="new-model")
 
-            # Both agents rebuilt = 2 more calls
-            assert mock_model.call_count == init_calls + 2
+            # Three agents rebuilt = 3 more calls
+            assert mock_model.call_count == init_calls + 3
             for i in range(init_calls, mock_model.call_count):
                 assert mock_model.call_args_list[i][0][0] == "new-model"
 
