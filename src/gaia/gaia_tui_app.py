@@ -24,6 +24,7 @@ from gaia.config import (
     AVAILABLE_MODELS,
     check_endpoint,
     load_config,
+    Settings,
 )
 from gaia.core.agent import Gaia
 from gaia.core.memory.factory import MemoryFactory
@@ -286,15 +287,27 @@ class GaiaTUIApp(App):
         super().__init__()
         _setup_logging()
         logger.info("GaiaTUIApp starting up")
-        self.settings = load_config()
+
+        # Load AGENT.md as the canonical system prompt, then merge over
+        # settings.json so the settings modal shows the actual prompt.
+        agent_md = ""
+        try:
+            agent_md = Path("AGENT.md").read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("failed to read AGENT.md — using settings.json")
+
+        raw_settings = load_config().to_dict()
+        if agent_md:
+            raw_settings["system_prompt"] = agent_md
+        self.settings = Settings.from_dict(raw_settings)
+
         try:
             self._memory = MemoryFactory.create(self.settings)
         except Exception:
             logger.exception("memory factory failed — memory disabled")
             self._memory = None
-        from pathlib import Path
         self.__core_agent = Gaia(
-            system_prompt=Path('AGENT.md').read_text(),
+            system_prompt=self.settings.system_prompt,
             model_name=self.settings.model,
             endpoint=self.settings.endpoint,
             memory=self._memory,
@@ -303,7 +316,6 @@ class GaiaTUIApp(App):
         self.is_shutting_down = False
         self._turn_count = 0
         self.__warn_if_unknown_model()
-        self._schedule_startup_extraction()
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
@@ -349,9 +361,16 @@ class GaiaTUIApp(App):
                 ", ".join(sorted(known)),
             )
 
+    @property
+    def core_agent(self) -> Gaia:
+        """Return the Gaia agent instance."""
+        return self._GaiaTUIApp__core_agent
+
     # ── Fact extraction scheduling ─────────────────────────────────
 
     _EXTRACT_EVERY_N_TURNS = 3
+    _SUMMARIZE_INTERVAL_MINUTES = 10
+    _SUMMARIZE_MIN_AGE_MINUTES = 30
 
     def _schedule_startup_extraction(self) -> None:
         """Extract facts from any episodic memory that hasn't been processed yet."""
@@ -372,6 +391,36 @@ class GaiaTUIApp(App):
                 logger.info("periodic extraction saved %d facts", count)
         except Exception:
             logger.exception("periodic extraction failed")
+
+    @work(exclusive=False, thread=False)
+    async def _run_background_summary_check(self) -> None:
+        """Periodically check if the user summary should be regenerated.
+
+        Runs every ~10 minutes. Only regenerates if the current summary
+        is older than 30 minutes and there's new data to include.
+        Reschedules itself on completion.
+        """
+        if self._memory is None:
+            return
+        try:
+            last_time = self._GaiaTUIApp__core_agent._Gaia__last_summary_time
+            if last_time is None or (
+                datetime.now() - last_time
+            ).total_seconds() > self._SUMMARIZE_MIN_AGE_MINUTES * 60:
+                summary = await self._GaiaTUIApp__core_agent.generate_user_summary()
+                if summary:
+                    logger.info(
+                        "background summary refreshed (%d chars)", len(summary)
+                    )
+        except Exception:
+            logger.exception("background summary check failed")
+
+    def _schedule_background_summary(self) -> None:
+        """Start the background summary check timer using set_interval."""
+        self.set_interval(
+            self._SUMMARIZE_INTERVAL_MINUTES * 60,
+            self._run_background_summary_check,
+        )
 
     def force_exit(self) -> None:
         """Graceful shutdown: close memory, stop workers and exit.
@@ -472,6 +521,9 @@ class GaiaTUIApp(App):
             except Exception:
                 logger.exception("memory init failed — memory disabled")
                 self._memory = None
+        if self._memory is not None:
+            self._schedule_startup_extraction()
+            self._schedule_background_summary()
 
     def __on_memory_init_done(self, task: asyncio.Task) -> None:
         """Retrieve the memory-initialisation result to suppress warnings."""
@@ -606,4 +658,4 @@ class GaiaTUIApp(App):
             logger.info(
                 "turn %d — triggering periodic fact extraction", self._turn_count
             )
-            self.call_later(self._run_periodic_extraction)
+            asyncio.get_event_loop().call_later(5, self._run_periodic_extraction)

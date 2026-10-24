@@ -113,6 +113,8 @@ SLASH_COMMANDS = [
     {"cmd": "/extract", "desc": "Auto-extract facts from recent conversation history"},
     {"cmd": "/extract-debug", "desc": "Extract facts and show raw LLM output in chat"},
     {"cmd": "/debug", "desc": "Toggle debug mode (on/off) — controls whether extraction status shows in chat"},
+    {"cmd": "/summary", "desc": "View the current user summary"},
+    {"cmd": "/regenerate", "desc": "Regenerate the user summary from conversation data"},
 ]
 
 

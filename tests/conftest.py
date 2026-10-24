@@ -3,10 +3,33 @@
 import json
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE
+
+
+def _make_mock_run_result(tokens: list[str]) -> MagicMock:
+    """Build a StreamedRunResult mock that streams *tokens*.
+
+    Returns an async-context-manager mock whose ``__aenter__`` yields a
+    ``MagicMock`` with a ``stream_text(delta=True)`` async generator that
+    yields each token in *tokens*.
+    """
+
+    async def _stream_text(delta: bool = False):
+        for token in tokens:
+            yield token
+
+    mock_result = MagicMock()
+    mock_result.stream_text = MagicMock(return_value=_stream_text(delta=True))
+
+    mock_cm = MagicMock()
+    mock_cm.__aenter__.return_value = mock_result
+    mock_cm.__aexit__.return_value = None
+
+    return mock_cm
 
 
 @pytest.fixture()

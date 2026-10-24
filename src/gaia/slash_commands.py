@@ -1,16 +1,55 @@
 """Slash command handler for the G.A.I.A. TUI application."""
 
 import json
+import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from pathlib import Path
 
 from textual.containers import ScrollableContainer
 from textual.widgets import Static
 
 from gaia.config import SETTINGS_FILE, Settings
+from gaia.core.agent.base import _parse_frontmatter
 from gaia.settings_modal import SettingsModal
 
 if TYPE_CHECKING:
     from gaia.gaia_tui_app import GaiaTUIApp
+
+
+logger = logging.getLogger("gaia.tui")
+
+_AGENT_MD = Path("AGENT.md")
+
+
+def _backup_system_prompt() -> None:
+    """Create a timestamped backup of AGENT.md before overwriting.
+
+    Backup filename: AGENT.backup.<YYYYMMDD-HHMMSS>.md
+    """
+    if not _AGENT_MD.exists():
+        return
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = _AGENT_MD.with_name(f"AGENT.backup.{ts}.md")
+    try:
+        _AGENT_MD.rename(backup_path)
+        logger.info("backed up system prompt → %s", backup_path)
+    except Exception:
+        logger.exception("failed to back up system prompt")
+
+
+def _remove_by_id(container: ScrollableContainer, widget_id: str) -> None:
+    """Remove a child widget by its CSS ID.
+
+    Textual's ``remove_children()`` does not accept a ``predicate``
+    argument, so we query by ID and call ``.remove()`` on the match.
+    """
+    try:
+        widget = container.query_one(f"#{widget_id}", Static)
+        widget.remove()
+    except Exception:
+        pass  # widget not found — nothing to remove
 
 
 class SlashCommandHandler:
@@ -51,7 +90,7 @@ class SlashCommandHandler:
                     )
                     from gaia.config import save_config
                     save_config(self._app.settings)
-                    self._app._GaiaTUIApp__core_agent.reconfigure(model_name=arg)
+                    self._app.core_agent.reconfigure(model_name=arg)
                     self._app._refresh_config_info()
                     await chat_box.mount(
                         ChatTurn(
@@ -83,11 +122,37 @@ class SlashCommandHandler:
                         self._app.settings = Settings.from_dict(merged)
                         from gaia.config import save_config
                         save_config(self._app.settings)
-                        self._app._GaiaTUIApp__core_agent.reconfigure(
+
+                        # Backup and write AGENT.md when system prompt changed
+                        prompt_changed = False
+                        try:
+                            old_agent_md = _AGENT_MD.read_text(encoding="utf-8")
+                            if old_agent_md.strip() != self._app.settings.system_prompt.strip():
+                                _backup_system_prompt()
+                                _AGENT_MD.write_text(
+                                    self._app.settings.system_prompt,
+                                    encoding="utf-8",
+                                )
+                                prompt_changed = True
+                                logger.info("updated AGENT.md with new system prompt")
+                        except Exception:
+                            logger.exception("failed to update AGENT.md — settings persisted anyway")
+
+                        self._app.core_agent.reconfigure(
                             model_name=self._app.settings.model,
                             endpoint=self._app.settings.endpoint,
+                            system_prompt=(
+                                self._app.settings.system_prompt
+                                if prompt_changed else ""
+                            ),
                         )
                         self._app._refresh_config_info()
+
+                        prompt_detail = ""
+                        if prompt_changed:
+                            prompt_detail = (
+                                "\n  • AGENT.md updated (old version backed up)"
+                            )
 
                         self._app.call_after_refresh(
                             chat_box.mount,
@@ -100,7 +165,8 @@ class SlashCommandHandler:
                                 f"  • Endpoint: "
                                 f"{self._app.settings.endpoint}\n"
                                 f"  • System Prompt: "
-                                f"[dim]{self._app.settings.system_prompt[:60]}...[/dim]\n"
+                                f"[dim]{self._app.settings.system_prompt[:60]}...[/dim]"
+                                f"{prompt_detail}\n"
                                 f"  • Vault Encryption: "
                                 f"{'Enabled' if self._app.settings.encrypted else 'Disabled'}",
                                 classes="agent-msg",
@@ -207,7 +273,7 @@ class SlashCommandHandler:
             case "extract":
                 if (
                     self._app._memory is not None
-                    and self._app._GaiaTUIApp__core_agent is not None
+                    and self._app.core_agent is not None
                 ):
                     await chat_box.mount(
                         ChatTurn(
@@ -219,15 +285,11 @@ class SlashCommandHandler:
                     chat_box.scroll_end()
 
                     count = await (
-                        self._app._GaiaTUIApp__core_agent.extract_from_history(
+                        self._app.core_agent.extract_from_history(
                             max_turns=10,
                         )
                     )
-                    await chat_box.remove_children(
-                        predicate=lambda t: getattr(
-                            t, "default_attrs", {}
-                        ).get("id") == "extract-status"
-                    )
+                    _remove_by_id(chat_box, "extract-status")
                     await chat_box.mount(
                         ChatTurn(
                             f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
@@ -250,7 +312,7 @@ class SlashCommandHandler:
                 # raw output
                 if (
                     self._app._memory is not None
-                    and self._app._GaiaTUIApp__core_agent is not None
+                    and self._app.core_agent is not None
                 ):
                     await chat_box.mount(
                         ChatTurn(
@@ -284,11 +346,7 @@ class SlashCommandHandler:
                             f"[dim]Agent: "
                             f"{agent_resp[:200]}[/dim]"
                         )
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(
-                                t, "default_attrs", {}
-                            ).get("id") == "extract-debug-status"
-                        )
+                        _remove_by_id(chat_box, "extract-debug-status")
                         await chat_box.mount(
                             ChatTurn(
                                 status_text,
@@ -298,7 +356,7 @@ class SlashCommandHandler:
                         )
                         # Now actually run extraction
                         count = (
-                            await self._app._GaiaTUIApp__core_agent.post_turn_extract(
+                            await self._app.core_agent.post_turn_extract(
                                 user_msg, agent_resp
                             )
                         )
@@ -310,11 +368,7 @@ class SlashCommandHandler:
                             )
                         )
                     else:
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(
-                                t, "default_attrs", {}
-                            ).get("id") == "extract-debug-status"
-                        )
+                        _remove_by_id(chat_box, "extract-debug-status")
                         await chat_box.mount(
                             ChatTurn(
                                 "[bold #ff007f]No conversation turns found in episodic memory.[/bold #ff007f]",
@@ -322,6 +376,96 @@ class SlashCommandHandler:
                             )
                         )
                     chat_box.scroll_end()
+                else:
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
+                            "Memory store is not initialized.",
+                            classes="agent-msg",
+                        )
+                    )
+
+            case "summary":
+                summary_path = Path.home() / ".gaia" / "user_summary.md"
+                if summary_path.exists():
+                    try:
+                        raw = summary_path.read_text(encoding="utf-8")
+                        _, content = _parse_frontmatter(raw)
+                    except OSError:
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #ff007f]Error:[/bold #ff007f] "
+                                "Could not read summary file.",
+                                classes="agent-msg",
+                            )
+                        )
+                        return
+                    await chat_box.mount(
+                        ChatTurn(
+                            f"[bold #00f0ff]User Summary:[/bold #00f0ff]\n"
+                            f"{content}",
+                            classes="agent-msg",
+                        )
+                    )
+                else:
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]No User Summary:[/bold #ff007f] "
+                            "A user summary will be generated after your first few conversations.\n"
+                            "Type [bold]/regenerate[/bold] to generate one now.",
+                            classes="agent-msg",
+                        )
+                    )
+
+            case "regenerate":
+                if (
+                    self._app._memory is not None
+                    and self._app.core_agent is not None
+                ):
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #00f0ff]Regenerating user summary...[/bold #00f0ff]",
+                            classes="agent-msg",
+                            id="summary-status",
+                        )
+                    )
+                    chat_box.scroll_end()
+
+                    try:
+                        summary = await (
+                            self._app.core_agent.generate_user_summary()
+                        )
+                    except Exception:
+                        logger.exception("summary regeneration failed")
+                        _remove_by_id(chat_box, "summary-status")
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #ff007f]Regeneration failed:[/bold #ff007f] "
+                                "Could not connect to the LLM. Check your endpoint.",
+                                classes="agent-msg",
+                            )
+                        )
+                        chat_box.scroll_end()
+                        return
+
+                    _remove_by_id(chat_box, "summary-status")
+                    if summary:
+                        await chat_box.mount(
+                            ChatTurn(
+                                f"[bold #00f0ff]User Summary regenerated:[/bold #00f0ff] "
+                                f"[bold]{len(summary)}[/bold] chars.\n"
+                                f"Type [bold]/summary[/bold] to view it.",
+                                classes="agent-msg",
+                            )
+                        )
+                    else:
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #00f0ff]Summary regenerated[/bold #00f0ff] "
+                                "(empty — no facts to summarize yet)",
+                                classes="agent-msg",
+                            )
+                        )
                 else:
                     await chat_box.mount(
                         ChatTurn(

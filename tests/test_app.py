@@ -179,17 +179,22 @@ class TestGaiaTUIAppInit:
         assert "f1" in commands
 
     def test_memory_factory_returns_none_for_unknown_backend(self) -> None:
-        """MemoryFactory returns None when memory backend is unknown."""
+        """MemoryFactory returns FileMemoryStore when memory backend is unknown
+        (from_dict defaults to 'file' for invalid backends).
+        """
         with patch(
             "gaia.gaia_tui_app.load_config",
             return_value=Settings(
                 model="test",
-                memory=MemoryConfig(backend="sqlite", memory_dir="~/.gaia/memory"),
+                memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory"),
             ),
-        ), patch("gaia.gaia_tui_app.Gaia"):
-            app = GaiaTUIApp()
+        ):
+            with patch("gaia.gaia_tui_app.Gaia"):
+                app = GaiaTUIApp()
 
-        assert app._memory is None
+        # Unknown backends default to 'file' via Settings.from_dict
+        assert app._memory is not None
+        assert type(app._memory).__name__ == "FileMemoryStore"
 
     def test_memory_factory_degrades_on_factory_error(self) -> None:
         """GaiaTUIApp degrades gracefully when the factory raises."""

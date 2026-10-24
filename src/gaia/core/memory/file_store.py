@@ -353,34 +353,32 @@ class FileMemoryStore(MemoryStore):
         """Search episodic events with optional filters."""
         if query:
             # Scoring search
-            results = self._scoring_search("episodic", query, limit * 5)
+            scored = self._scoring_search("episodic", query, limit * 5)
 
-            # Post-filter by event_types and time_range
-            records: list[dict] = []
-            for _score, _ts, meta, body in results:
-                # Filter by event_types
-                if event_types is not None:
-                    if meta.get("event_type", "") not in event_types:
-                        continue
+            if scored:
+                records: list[dict] = []
+                for _score, _ts, meta, body in scored:
+                    if event_types is not None:
+                        if meta.get("event_type", "") not in event_types:
+                            continue
+                    if time_range is not None:
+                        ts = meta.get("timestamp", "")
+                        if ts < time_range[0] or ts > time_range[1]:
+                            continue
+                    payload_raw = meta.get("payload", "{}")
+                    records.append({
+                        "event_id": meta.get("event_id", ""),
+                        "event_type": meta.get("event_type", "unknown"),
+                        "conversation_id": meta.get("conversation_id"),
+                        "timestamp": meta.get("timestamp", ""),
+                        "summary": body,
+                        "payload": payload_raw,
+                        "created_at": meta.get("created_at", ""),
+                    })
+                return records[:limit]
 
-                # Filter by time_range
-                if time_range is not None:
-                    ts = meta.get("timestamp", "")
-                    if ts < time_range[0] or ts > time_range[1]:
-                        continue
-
-                payload_raw = meta.get("payload", "{}")
-                records.append({
-                    "event_id": meta.get("event_id", ""),
-                    "event_type": meta.get("event_type", "unknown"),
-                    "conversation_id": meta.get("conversation_id"),
-                    "timestamp": meta.get("timestamp", ""),
-                    "summary": body,
-                    "payload": payload_raw,
-                    "created_at": meta.get("created_at", ""),
-                })
-
-            return records[:limit]
+            # Vector/token search found nothing — fall back to full scan
+            # so metadata filters still work.
 
         # No query — scan all files
         files = self._list_md("episodic")

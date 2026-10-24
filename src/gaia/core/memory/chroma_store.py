@@ -325,10 +325,15 @@ class ChromaMemoryStore(MemoryStore):
                 else []
             )
             if not ids:
-                return []
-            results = await self._thread(
-                lambda: collection.get(ids=ids, include=["documents", "metadatas"])
-            )
+                # Vector search found nothing — fall back to full scan
+                # so metadata filters (event_types, time_range) still work.
+                results = await self._thread(
+                    lambda: collection.get(include=["documents", "metadatas"])
+                )
+            else:
+                results = await self._thread(
+                    lambda: collection.get(ids=ids, include=["documents", "metadatas"])
+                )
         else:
             # No text query — fetch all and filter in Python.
             results = await self._thread(
