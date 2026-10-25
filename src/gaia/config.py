@@ -78,7 +78,7 @@ class Settings:
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
-    "endpoint": "http://localhost:11434",
+    "endpoint": "http://127.0.0.1:8080",
     "encrypted": True,
     "memory_dir": "~/.gaia/memory",
     "memory": {
