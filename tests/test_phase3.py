@@ -225,7 +225,8 @@ class TestGaiatuiappModelSwitchReconfiguresAgent:
         mock_agent = MagicMock()
         app, _ = self._make_app(settings=settings, agent=mock_agent)
 
-        await app._slash_handler.handle_slash_command("/model new-model")
+        with patch("gaia.config.save_config"):
+            await app._slash_handler.handle_slash_command("/model new-model")
 
         mock_agent.reconfigure.assert_called_once_with(model_name="new-model")
 
