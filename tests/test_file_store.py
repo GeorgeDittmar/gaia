@@ -362,3 +362,58 @@ class TestLifecycle:
 
         results = await store.semantic_search("fact", limit=10)
         assert len(results) == 2
+
+
+# ── Generic delete_memory ──────────────────────────────────────────
+
+
+class TestDeleteMemory:
+    """Tests for the generic delete_memory method."""
+
+    @pytest.fixture()
+    def store(self, tmp_path: Path) -> FileMemoryStore:
+        s = FileMemoryStore(tmp_path / "memory")
+        asyncio.run(s.initialize())
+        return s
+
+    @pytest.mark.asyncio
+    async def test_delete_semantic(self, store: FileMemoryStore) -> None:
+        fact_id = await store.semantic_insert(
+            "To be deleted", "general", 0.5, "test"
+        )
+        await store.delete_memory("semantic", fact_id)
+        assert not (store._memory_dir / "semantic" / f"{fact_id}.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_episodic(self, store: FileMemoryStore) -> None:
+        event_id = await store.episodic_record(
+            "conversation_turn", "c1", "delete me", {}
+        )
+        await store.delete_memory("episodic", event_id)
+        assert not (store._memory_dir / "episodic" / f"{event_id}.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_procedure(self, store: FileMemoryStore) -> None:
+        await store.procedure_register(
+            "del-me", "DeleteMe", "To be deleted", "safe"
+        )
+        await store.delete_memory("procedure", "del-me")
+        assert not (store._memory_dir / "procedures" / "del-me.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_audit(self, store: FileMemoryStore) -> None:
+        await store.audit_log("some_action", actor="agent")
+        audit_files = list((store._memory_dir / "audit").glob("*.md"))
+        assert len(audit_files) == 1
+        await store.delete_memory("audit", audit_files[0].stem)
+        assert len(list((store._memory_dir / "audit").glob("*.md"))) == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_type_ignores(self, store: FileMemoryStore) -> None:
+        """Unknown target_type should not raise."""
+        await store.delete_memory("nonexistent", "any-id")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_semantic(self, store: FileMemoryStore) -> None:
+        """Deleting a non-existent semantic entry should not raise."""
+        await store.delete_memory("semantic", "does-not-exist")  # should not raise

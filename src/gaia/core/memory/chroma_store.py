@@ -594,3 +594,27 @@ class ChromaMemoryStore(MemoryStore):
                 ids=[entry_id],
             )
         )
+
+    # ── Generic deletion ─────────────────────────────────────────
+
+    async def delete_memory(self, target_type: str, target_id: str) -> None:
+        """Delete a memory entry by type and ID."""
+        collection_name: str | None
+        match target_type:
+            case "semantic":
+                collection_name = "semantic_facts"
+            case "episodic":
+                collection_name = "episodic_events"
+            case "procedure":
+                collection_name = "procedure_entries"
+            case "audit":
+                collection_name = "audit_log"
+            case _:
+                return  # Unknown type — silently ignore
+
+        collection = self._collections[collection_name]
+        await self._thread(
+            lambda: collection.delete(where={"fact_id": target_id})
+            if collection_name == "semantic_facts"
+            else collection.delete(ids=[target_id])
+        )

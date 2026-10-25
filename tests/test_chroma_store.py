@@ -496,3 +496,49 @@ class TestWorkflow:
         # Cleanup: prune everything
         await store.episodic_prune("2100-01-01T00:00:00+00:00")
         assert len(await store.episodic_get_conversation("conv-x")) == 0
+
+
+# ── Generic delete_memory ──────────────────────────────────────────
+
+
+class TestDeleteMemory:
+    """Tests for the generic delete_memory method on ChromaMemoryStore."""
+
+    async def test_delete_semantic(self, store: ChromaMemoryStore) -> None:
+        fact_id = await store.semantic_insert(
+            "will be deleted via generic method",
+            "test",
+            1.0,
+            "test",
+        )
+        await store.delete_memory("semantic", fact_id)
+        assert len(await store.semantic_search("will be deleted")) == 0
+
+    async def test_delete_episodic(self, store: ChromaMemoryStore) -> None:
+        eid = await store.episodic_record(
+            "test_event", "c1", "generic delete test"
+        )
+        # Verify it was inserted
+        before = await store.episodic_search(query="generic delete", limit=10)
+        assert len(before) == 1
+        # Delete via generic method
+        await store.delete_memory("episodic", eid)
+        after = await store.episodic_search(query="generic delete", limit=10)
+        assert len(after) == 0
+
+    async def test_delete_procedure(self, store: ChromaMemoryStore) -> None:
+        await store.procedure_register(
+            "gen-del", "GenericDel", "To be deleted", "safe"
+        )
+        await store.delete_memory("procedure", "gen-del")
+        assert await store.procedure_get("gen-del") is None
+
+    async def test_delete_unknown_type_ignores(self, store: ChromaMemoryStore) -> None:
+        """Unknown target_type should not raise."""
+        await store.delete_memory("nonexistent", "any-id")  # should not raise
+
+    async def test_delete_nonexistent_semantic(self, store: ChromaMemoryStore) -> None:
+        """Deleting a non-existent semantic entry should not raise."""
+        await store.delete_memory(
+            "semantic", "00000000-0000-0000-0000-000000000000"
+        )

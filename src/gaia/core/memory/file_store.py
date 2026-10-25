@@ -575,3 +575,24 @@ class FileMemoryStore(MemoryStore):
         }
         path = self._memory_dir / "audit" / f"{entry_id}.md"
         await asyncio.to_thread(self._write_file, path, meta, action)
+
+    # ── Generic deletion ─────────────────────────────────────────
+
+    async def delete_memory(self, target_type: str, target_id: str) -> None:
+        """Delete a memory entry by type and ID."""
+        subdir: str | None
+        match target_type:
+            case "semantic":
+                subdir = "semantic"
+            case "episodic":
+                subdir = "episodic"
+            case "procedure":
+                subdir = "procedures"
+            case "audit":
+                subdir = "audit"
+            case _:
+                return  # Unknown type — silently ignore
+
+        path = self._memory_dir / subdir / f"{target_id}.md"
+        if path.exists():
+            await asyncio.to_thread(path.unlink)
