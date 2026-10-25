@@ -431,8 +431,6 @@ class GaiaTUIApp(App):
         is active, falling back to ``asyncio.run()`` otherwise.
         """
         self.is_shutting_down = True
-        # Final periodic extraction before shutdown
-        self._schedule_shutdown_extraction()
         if self._memory is not None:
             try:
                 loop = asyncio.get_running_loop()
@@ -442,16 +440,6 @@ class GaiaTUIApp(App):
                 asyncio.run(self._close_memory())
         self.workers.cancel_all()
         self.exit()
-
-    def _schedule_shutdown_extraction(self) -> None:
-        """Run batch extraction one last time before the session ends."""
-        if self._memory is None:
-            return
-        try:
-            # @work methods are started by calling them directly
-            self._run_periodic_extraction()
-        except Exception:
-            pass  # Best effort during shutdown
 
     def action_quit(self) -> None:
         self.force_exit()

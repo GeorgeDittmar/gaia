@@ -27,7 +27,7 @@ class TestSettings:
     def test_defaults(self) -> None:
         s = Settings()
         assert s.model == "qwen2.5-coder:32b"
-        assert s.endpoint == "http://localhost:11434"
+        assert s.endpoint == DEFAULT_SETTINGS["endpoint"]
         assert s.encrypted is True
 
     def test_custom_values(self) -> None:

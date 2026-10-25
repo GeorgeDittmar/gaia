@@ -131,7 +131,7 @@ class SettingsModal(ModalScreen[dict[str, Any] | None]):
                 yield Label("API Base URL:", classes="field-label")
                 yield Input(
                     value=str(self.current_settings.endpoint),
-                    placeholder="http://localhost:11434",
+                    placeholder="http://127.0.0.1:8080",
                     id="endpoint-input",
                 )
 
@@ -176,7 +176,7 @@ class SettingsModal(ModalScreen[dict[str, Any] | None]):
             ),
             "endpoint": (
                 self.query_one("#endpoint-input", Input).value.strip()
-                or "http://localhost:11434"
+                or DEFAULT_SETTINGS["endpoint"]
             ),
             "system_prompt": (
                 self.query_one("#system-prompt-textarea", TextArea).text.strip()

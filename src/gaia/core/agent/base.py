@@ -594,15 +594,6 @@ class Gaia:
             except Exception:
                 logger.exception("failed to save planner note")
 
-        # 7. Inline fact extraction — save explicit facts immediately so they're
-        # available for the next turn's memory retrieval. The background
-        # `extract_from_history()` later catches any gaps.
-        if self._memory is not None and response_text and prompt:
-            try:
-                await self.post_turn_extract(prompt, response_text)
-            except Exception:
-                logger.exception("inline fact extraction failed")
-
     # ── Post-turn fact extraction ──────────────────────────────────────
 
     async def post_turn_extract(

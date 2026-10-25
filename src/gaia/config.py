@@ -25,7 +25,7 @@ class Settings:
     """Immutable application settings loaded from ``settings.json``."""
 
     model: str = "qwen2.5-coder:32b"
-    endpoint: str = "http://localhost:11434"
+    endpoint: str = "http://127.0.0.1:8080"
     encrypted: bool = True
     system_prompt: str = (
         "You are G.A.I.A., an advanced, secure local AI agent. "

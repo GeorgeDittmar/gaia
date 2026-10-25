@@ -263,15 +263,19 @@ class TestPostTurnExtractConflict:
         assert calls[0].kwargs["source_id"] == "fact-1"
 
 
-# ── ainteract inline extraction ──────────────────────────────────────────
+# ── ainteract extraction policy (batch-only, issue #5) ───────────────────
 
 
-class TestAinteractInlineExtraction:
-    """Tests for inline fact extraction in ainteract()."""
+class TestAinteractNoInlineExtraction:
+    """Issue #5: ainteract() must NOT extract inline — extraction is batch-only.
+
+    Extraction now happens once per N turns via ``extract_from_history``
+    (called by the periodic extractor), not on every turn.
+    """
 
     @pytest.mark.asyncio
-    async def test_calls_inline_extraction_after_turn(self, gaia_agent):
-        """ainteract calls post_turn_extract after receiving a response."""
+    async def test_does_not_inline_extract_after_turn(self, gaia_agent):
+        """ainteract does not call post_turn_extract — periodic handles it."""
         mock_memory = AsyncMock()
         gaia_agent._memory = mock_memory
 
@@ -284,7 +288,7 @@ class TestAinteractInlineExtraction:
             {"role": "user", "content": "hello"},
         ]
 
-        # Patch post_turn_extract on the class to verify it gets called
+        # Patch post_turn_extract on the class to verify it is NOT called.
         with (
             patch("gaia.core.agent.base.asyncio.sleep", return_value=None),
             patch.object(
@@ -297,8 +301,9 @@ class TestAinteractInlineExtraction:
             async for token in gaia_agent.ainteract("hello there"):
                 tokens.append(token)
 
-        # post_turn_extract should have been called after the turn
-        mock_extract.assert_awaited_once()
+        # No inline extraction on a completed turn (batch-only extraction).
+        mock_extract.assert_not_awaited()
+        assert tokens == ["hello world"]
 
 
 # ── reconfigure with system_prompt ──────────────────────────────────────

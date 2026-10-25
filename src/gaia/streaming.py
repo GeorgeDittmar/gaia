@@ -106,8 +106,7 @@ async def run_agent_stream(app: "GaiaTUIApp", prompt: str) -> str:
             agent_widget.update(base_prefix + response_accumulator)
             chat_box.scroll_end()
 
-    # No automatic extraction — facts are batch-extracted once per session
-    # at shutdown via force_exit(). This gives the LLM full context and
-    # avoids N redundant LLM calls (one per turn) creating duplicates.
+    # No per-turn extraction. Facts are batch-extracted periodically
+    # (every N turns) from episodic history after each agent response.
 
     return response_accumulator

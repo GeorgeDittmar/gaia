@@ -71,7 +71,7 @@ class TestLoadConfig:
 
         assert isinstance(result, Settings)
         assert result.model == "qwen2.5-coder:32b"
-        assert result.endpoint == "http://localhost:11434"
+        assert result.endpoint == DEFAULT_SETTINGS["endpoint"]
         assert result.encrypted is True
 
     def test_creates_file_when_missing(
