@@ -228,7 +228,10 @@ class TestGaiatuiappModelSwitchReconfiguresAgent:
         with patch("gaia.config.save_config"):
             await app._slash_handler.handle_slash_command("/model new-model")
 
-        mock_agent.reconfigure.assert_called_once_with(model_name="new-model")
+        mock_agent.reconfigure.assert_called_once_with(
+            model_name="new-model",
+            max_context_tokens=4000,
+        )
 
     @pytest.mark.asyncio
     async def test_model_command_saves_config(self):
@@ -333,11 +336,13 @@ class TestSettingsModalReconfigure:
             mock_agent.reconfigure(
                 model_name=app.settings.model,
                 endpoint=app.settings.endpoint,
+                max_context_tokens=4000,
             )
 
         mock_agent.reconfigure.assert_called_once_with(
             model_name="new-model",
             endpoint="http://old:11434",
+            max_context_tokens=4000,
         )
 
 

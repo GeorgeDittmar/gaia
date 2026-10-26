@@ -90,7 +90,10 @@ class SlashCommandHandler:
                     )
                     from gaia.config import save_config
                     save_config(self._app.settings)
-                    self._app.core_agent.reconfigure(model_name=arg)
+                    self._app.core_agent.reconfigure(
+                        model_name=arg,
+                        max_context_tokens=self._app.settings.max_context_tokens,
+                    )
                     self._app._refresh_config_info()
                     await chat_box.mount(
                         ChatTurn(
@@ -145,6 +148,7 @@ class SlashCommandHandler:
                                 self._app.settings.system_prompt
                                 if prompt_changed else ""
                             ),
+                            max_context_tokens=self._app.settings.max_context_tokens,
                         )
                         self._app._refresh_config_info()
 

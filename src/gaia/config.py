@@ -38,6 +38,7 @@ class Settings:
         "You will never harm the user, you must do your best to assist the user "
         "whenever they ask or with whatever they need."
     )
+    max_context_tokens: int = 4000
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
     @classmethod
@@ -54,6 +55,9 @@ class Settings:
             endpoint=d.get("endpoint", cls.endpoint),
             encrypted=d.get("encrypted", cls.encrypted),
             system_prompt=d.get("system_prompt", cls.system_prompt),
+            max_context_tokens=d.get(
+                "max_context_tokens", cls.max_context_tokens
+            ),
             memory=MemoryConfig(
                 backend=backend,
                 memory_dir=d.get("memory_dir", "~/.gaia/memory"),
@@ -74,6 +78,7 @@ class Settings:
             "endpoint": self.endpoint,
             "encrypted": self.encrypted,
             "system_prompt": self.system_prompt,
+            "max_context_tokens": self.max_context_tokens,
             "memory_dir": self.memory.memory_dir,
             "memory": {
                 "backend": self.memory.backend,
@@ -85,6 +90,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
     "endpoint": "http://127.0.0.1:8080",
     "encrypted": True,
+    "max_context_tokens": 4000,
     "memory_dir": "~/.gaia/memory",
     "memory": {
         "backend": "file",  # "file" or "chroma"

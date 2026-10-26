@@ -24,6 +24,8 @@ from pydantic_ai.providers.openai import OpenAIProvider
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
 
+from gaia.core.context import ContextWindow, _DEFAULT_MAX_TOKENS, _DEFAULT_MIN_AGE_TURNS
+
 # Auto-classification keywords for extracted facts
 _PREFERENCE_KEYWORDS = frozenset([
     "name", "location", "lives", "born", "from", "job", "role",
@@ -157,6 +159,7 @@ class Gaia:
         endpoint: str = "http://localhost:8080/v1",
         api_key: str = "not-needed",
         memory: MemoryStore | None = None,
+        max_context_tokens: int = _DEFAULT_MAX_TOKENS,
     ) -> None:
         self._system_prompt = system_prompt
         self._model_name = model_name
@@ -172,6 +175,10 @@ class Gaia:
         )
         self.__message_hist: list[dict] = []
         self._memory = memory
+        self._context_window = ContextWindow(
+            max_tokens=max_context_tokens,
+            min_age_turns=_DEFAULT_MIN_AGE_TURNS,
+        )
         self.__conv_id = _generate_conversation_id()
         self.__extraction_agent = self._make_extraction_agent()
         self.__planner_agent = self._make_planner_agent()
@@ -293,6 +300,30 @@ class Gaia:
             ),
         )
 
+    async def _summarize_turns(self, conversation_text: str) -> str:
+        """Summarize a set of turns into a single compact message.
+
+        Uses the summary agent to compress the oldest half of a conversation
+        into 3-5 bullet points, preserving facts, decisions, and preferences.
+
+        Args:
+            conversation_text: Raw text from concatenating the oldest messages.
+
+        Returns:
+            A summary string, or empty string on failure.
+        """
+        try:
+            summary_agent = self._make_summary_agent()
+            result = await summary_agent.run(
+                "Summarize this conversation into 3-5 concise bullet points. "
+                "Preserve any specific facts, decisions, or preferences mentioned. "
+                "Omit pleasantries and filler.\n\n" + conversation_text
+            )
+            return result.output.strip()
+        except Exception:
+            logger.exception("summarize_turns failed")
+            return ""
+
     def _load_user_summary(self) -> str:
         """Load the user summary from disk.
 
@@ -328,7 +359,14 @@ class Gaia:
         except Exception:
             logger.exception("failed to save user summary")
 
-    def reconfigure(self, model_name: str = "", endpoint: str = "", api_key: str = "", system_prompt: str = "") -> None:
+    def reconfigure(
+        self,
+        model_name: str = "",
+        endpoint: str = "",
+        api_key: str = "",
+        system_prompt: str = "",
+        max_context_tokens: int = _DEFAULT_MAX_TOKENS,
+    ) -> None:
         """Swap the underlying model, endpoint, and/or system prompt.
 
         Only non-empty values are applied, so callers can pass
@@ -368,6 +406,10 @@ class Gaia:
         self.__extraction_agent = self._make_extraction_agent()
         self.__planner_agent = self._make_planner_agent()
         self.__message_hist = []
+        self._context_window = ContextWindow(
+            max_tokens=max_context_tokens,
+            min_age_turns=_DEFAULT_MIN_AGE_TURNS,
+        )
 
     def get_user_summary(self) -> str:
         """Return the currently loaded user summary text."""
@@ -604,6 +646,44 @@ class Gaia:
             response_text = "".join(response_chunks)
             raise
         response_text = "".join(response_chunks)
+
+        # Track this turn in the context window and rollup if needed
+        self._context_window.add({
+            "role": "user",
+            "content": prompt,
+        })
+        self._context_window.add({
+            "role": "assistant",
+            "content": response_text,
+        })
+
+        if self._context_window.should_rollup():
+            messages = self.__message_hist
+            rollup_msgs = self._context_window.oldest_half(messages)
+            if rollup_msgs:
+                rollup_text = "\n".join(
+                    f"{m.get('role', 'unknown')}: {str(m.get('content', ''))[:500]}"
+                    for m in rollup_msgs
+                )
+                try:
+                    summary = await self._summarize_turns(rollup_text)
+                    if summary:
+                        # Remove rolled-up messages from the window
+                        self._context_window.remove(rollup_msgs)
+                        # Add the new summary message
+                        self._context_window.add({
+                            "role": "system",
+                            "content": f"[Conversation Summary]\n{summary}",
+                        })
+                        # Replace oldest messages with the summary
+                        self.__message_hist = (
+                            [{"role": "system", "content": f"[Conversation Summary]\n{summary}"}]
+                            + messages[len(rollup_msgs):]
+                        )
+                        # Sync window estimate to actual history
+                        self._context_window.sync(self.__message_hist)
+                except Exception:
+                    logger.exception("rollup failed — keeping full history")
 
         # 5. Record episodic memory
         if self._memory is not None and response_text:

@@ -312,6 +312,7 @@ class GaiaTUIApp(App):
             model_name=self.settings.model,
             endpoint=self.settings.endpoint,
             memory=self._memory,
+            max_context_tokens=self.settings.max_context_tokens,
         )
         self._slash_handler = SlashCommandHandler(self)
         self.is_shutting_down = False
