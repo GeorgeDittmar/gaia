@@ -10,7 +10,7 @@ Business logic is extracted into separate modules:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from textual import work
@@ -423,6 +423,28 @@ class GaiaTUIApp(App):
             self._run_background_summary_check,
         )
 
+    @work(exclusive=False, thread=False)
+    async def _run_retention_check(self) -> None:
+        """Prune episodic memory older than retention_days."""
+        if self._memory is None:
+            return
+        before = (
+            datetime.now() - timedelta(days=self.settings.memory.retention_days)
+        ).isoformat()
+        try:
+            n = await self._memory.episodic_prune(before)
+            if n > 0:
+                logger.info("retention pruned %d episodes", n)
+        except Exception:
+            logger.exception("retention pruning failed")
+
+    def _schedule_retention(self) -> None:
+        """Start the retention pruning timer using set_interval."""
+        self.set_interval(
+            86400,  # every 24 hours (pruning is cheap, daily is fine)
+            self._run_retention_check,
+        )
+
     def force_exit(self) -> None:
         """Graceful shutdown: close memory, stop workers and exit.
 
@@ -513,6 +535,7 @@ class GaiaTUIApp(App):
         if self._memory is not None:
             self._schedule_startup_extraction()
             self._schedule_background_summary()
+            self._schedule_retention()
 
     def __on_memory_init_done(self, task: asyncio.Task) -> None:
         """Retrieve the memory-initialisation result to suppress warnings."""

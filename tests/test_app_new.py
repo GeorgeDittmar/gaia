@@ -127,7 +127,8 @@ class TestBackgroundTimer:
 
                     app = GaiaTUIApp()
 
-            # When memory exists, on_mount should call set_interval
+            # When memory exists, on_mount should call set_interval for
+            # both the summary check and the retention pruning.
             mock_store = MagicMock()
             app._memory = mock_store
             app.set_interval = MagicMock()
@@ -136,14 +137,14 @@ class TestBackgroundTimer:
             # Simulate on_mount
             app.on_mount()
 
-            # Verify the timer was scheduled
-            call_args = app.set_interval.call_args
-            assert call_args is not None
-            # Textual's set_interval(interval_seconds, callback) — call_args[0] is the tuple
-            args = call_args[0]
-            assert len(args) == 2
-            assert args[0] == 600  # 10-minute interval
-            assert callable(args[1])  # callback is the summary check
+            # Verify timers were scheduled
+            assert app.set_interval.call_count == 2
+            intervals = {c.args[0] for c in app.set_interval.call_args_list}
+            assert 600 in intervals  # 10-min summary check
+            assert 86400 in intervals  # 24-hr retention pruning
+            for call in app.set_interval.call_args_list:
+                assert len(call.args) == 2
+                assert callable(call.args[1])
         finally:
             os.chdir(original_cwd)
 

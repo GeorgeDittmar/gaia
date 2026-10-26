@@ -20,6 +20,7 @@ class MemoryConfig:
 
     backend: str = "file"  # "file" or "chroma"
     memory_dir: str = "~/.gaia/memory"
+    retention_days: int = 30
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class Settings:
             memory=MemoryConfig(
                 backend=backend,
                 memory_dir=d.get("memory_dir", "~/.gaia/memory"),
+                retention_days=mem_cfg.get("retention_days", MemoryConfig.retention_days),
             ),
         )
 
@@ -75,6 +77,7 @@ class Settings:
             "memory_dir": self.memory.memory_dir,
             "memory": {
                 "backend": self.memory.backend,
+                "retention_days": self.memory.retention_days,
             },
         }
 
@@ -85,6 +88,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "memory_dir": "~/.gaia/memory",
     "memory": {
         "backend": "file",  # "file" or "chroma"
+        "retention_days": 30,
     },
     "system_prompt": (
         "You are G.A.I.A., an advanced, secure local AI agent. "

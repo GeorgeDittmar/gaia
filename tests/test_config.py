@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from gaia.config import DEFAULT_SETTINGS, Settings, load_config, save_config
+from gaia.config import DEFAULT_SETTINGS, MemoryConfig, Settings, load_config, save_config
 
 
 class TestSettingsFileLocation:
@@ -140,3 +140,21 @@ class TestLoadConfig:
         assert isinstance(result, Settings)
         assert result.model == DEFAULT_SETTINGS["model"]
         assert result.endpoint == DEFAULT_SETTINGS["endpoint"]
+
+
+class TestMemoryConfig:
+    def test_retention_days_default(self) -> None:
+        """MemoryConfig defaults to 30 days retention."""
+        cfg = MemoryConfig()
+        assert cfg.retention_days == 30
+
+    def test_retention_days_from_dict(self) -> None:
+        """Settings.from_dict respects retention_days in memory config."""
+        s = Settings.from_dict({"memory": {"retention_days": 7}})
+        assert s.memory.retention_days == 7
+
+    def test_retention_days_to_dict(self) -> None:
+        """Settings.to_dict includes retention_days."""
+        s = Settings(memory=MemoryConfig(retention_days=14))
+        d = s.to_dict()
+        assert d["memory"]["retention_days"] == 14
