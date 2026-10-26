@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ from gaia.core.memory.base import MemoryStore
 
 def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _uuid() -> str:
@@ -232,6 +232,33 @@ class ChromaMemoryStore(MemoryStore):
 
         return records
 
+    async def semantic_similarity_search(
+        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+    ) -> bool:
+        """Check if any fact is semantically similar to *query*.
+
+        ChromaDB returns distances in its query response — cosine
+        distance where 0 = identical, 2 = opposite.  If any returned
+        distance is <= threshold, the fact is a near-duplicate.
+        """
+        collection = self._collections["semantic_facts"]
+        result = await self._thread(
+            lambda: collection.query(
+                query_texts=[query],
+                n_results=limit,
+                include=["distances"],
+            )
+        )
+
+        distances = result.get("distances", [])
+        if not distances or not distances[0]:
+            return False
+
+        # Chroma default is cosine distance: 0 = identical, 2 = opposite
+        # Lower distance = more similar.  Threshold 0.8 means
+        # "anything with cosine distance <= 0.8 is considered duplicate"
+        return any(d <= distance_threshold for d in distances[0])
+
     # ── Episodic operations ──────────────────────────────────────
 
     async def episodic_record(
@@ -298,10 +325,15 @@ class ChromaMemoryStore(MemoryStore):
                 else []
             )
             if not ids:
-                return []
-            results = await self._thread(
-                lambda: collection.get(ids=ids, include=["documents", "metadatas"])
-            )
+                # Vector search found nothing — fall back to full scan
+                # so metadata filters (event_types, time_range) still work.
+                results = await self._thread(
+                    lambda: collection.get(include=["documents", "metadatas"])
+                )
+            else:
+                results = await self._thread(
+                    lambda: collection.get(ids=ids, include=["documents", "metadatas"])
+                )
         else:
             # No text query — fetch all and filter in Python.
             results = await self._thread(
@@ -561,4 +593,28 @@ class ChromaMemoryStore(MemoryStore):
                 metadatas=[metadata],
                 ids=[entry_id],
             )
+        )
+
+    # ── Generic deletion ─────────────────────────────────────────
+
+    async def delete_memory(self, target_type: str, target_id: str) -> None:
+        """Delete a memory entry by type and ID."""
+        collection_name: str | None
+        match target_type:
+            case "semantic":
+                collection_name = "semantic_facts"
+            case "episodic":
+                collection_name = "episodic_events"
+            case "procedure":
+                collection_name = "procedure_entries"
+            case "audit":
+                collection_name = "audit_log"
+            case _:
+                return  # Unknown type — silently ignore
+
+        collection = self._collections[collection_name]
+        await self._thread(
+            lambda: collection.delete(where={"fact_id": target_id})
+            if collection_name == "semantic_facts"
+            else collection.delete(ids=[target_id])
         )

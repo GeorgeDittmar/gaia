@@ -1,12 +1,35 @@
 """Shared fixtures for the G.A.I.A. test suite."""
 
 import json
-import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Dict, Any
+from unittest.mock import MagicMock
+
 import pytest
 
 from gaia.config import DEFAULT_SETTINGS, SETTINGS_FILE
+
+
+def _make_mock_run_result(tokens: list[str]) -> MagicMock:
+    """Build a StreamedRunResult mock that streams *tokens*.
+
+    Returns an async-context-manager mock whose ``__aenter__`` yields a
+    ``MagicMock`` with a ``stream_text(delta=True)`` async generator that
+    yields each token in *tokens*.
+    """
+
+    async def _stream_text(delta: bool = False):
+        for token in tokens:
+            yield token
+
+    mock_result = MagicMock()
+    mock_result.stream_text = MagicMock(return_value=_stream_text(delta=True))
+
+    mock_cm = MagicMock()
+    mock_cm.__aenter__.return_value = mock_result
+    mock_cm.__aexit__.return_value = None
+
+    return mock_cm
 
 
 @pytest.fixture()
@@ -35,7 +58,6 @@ def empty_settings(settings_path: Path) -> Path:
 
     Returns the path to the written file so callers can assert it was created.
     """
-    import gaia.config as config_mod
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(DEFAULT_SETTINGS, f, indent=4)
     return settings_path
