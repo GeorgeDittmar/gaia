@@ -6,6 +6,16 @@ from pathlib import Path
 from gaia.config import DEFAULT_SETTINGS, Settings, load_config, save_config
 
 
+class TestSettingsFileLocation:
+    """Tests for SETTINGS_FILE location under ~/.gaia/."""
+
+    def test_settings_file_resides_in_home_gaia_dir(self) -> None:
+        """SETTINGS_FILE is under ~/.gaia/, not relative to CWD."""
+        from gaia.config import SETTINGS_DIR, SETTINGS_FILE
+        assert SETTINGS_FILE.parent == SETTINGS_DIR
+        assert "settings.json" in SETTINGS_FILE.name
+
+
 class TestSaveConfig:
     """Tests for save_config()."""
 

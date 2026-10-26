@@ -1,11 +1,13 @@
 """Application configuration and persistence helpers."""
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SETTINGS_FILE = Path("settings.json")
+SETTINGS_DIR = Path(os.path.expanduser("~/.gaia"))
+SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 
 @dataclass(frozen=True)
@@ -119,9 +121,12 @@ SLASH_COMMANDS = [
 
 
 def save_config(settings: Settings) -> None:
-    """Persist *settings* to the settings file on disk."""
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+    """Persist *settings* to the settings file on disk (atomically)."""
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(settings.to_dict(), f, indent=4)
+    os.replace(tmp, SETTINGS_FILE)
 
 
 def load_config() -> Settings:

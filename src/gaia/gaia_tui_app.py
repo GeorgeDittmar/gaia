@@ -25,6 +25,7 @@ from gaia.config import (
     check_endpoint,
     load_config,
     Settings,
+    SETTINGS_DIR,
 )
 from gaia.core.agent import Gaia
 from gaia.core.memory.factory import MemoryFactory
@@ -39,8 +40,8 @@ logger = logging.getLogger("gaia.tui")
 def _setup_logging() -> None:
     """Configure file-based logging with a session timestamped log file."""
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = SETTINGS_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"gaia-{ts}.log"
 
     formatter = logging.Formatter(
