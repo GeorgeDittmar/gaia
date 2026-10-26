@@ -252,7 +252,7 @@ class TestEpisodicMemory:
         old_files = list((store._memory_dir / "episodic").glob("*.md"))
         if old_files:
             old_files[0].write_text(
-                _build_frontmatter({"timestamp": old_time})
+                _build_frontmatter({"event_id": "old-event", "timestamp": old_time})
                 + "old event\n"
             )
 

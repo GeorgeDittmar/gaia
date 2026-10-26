@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -25,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from gaia.core.memory.base import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────
 
@@ -148,16 +152,19 @@ class FileMemoryStore(MemoryStore):
             memory_dir = Path.home() / ".gaia" / "memory"
         self._memory_dir = Path(memory_dir)
         self._initialized = False
+        self._index: dict[str, tuple[str, dict[str, str]]] = {}  # key -> (path_str, meta)
+        self._index_path = self._memory_dir.parent / ".gaia_memory_index.json"
 
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def initialize(self) -> None:
-        """Create subdirectories if they do not exist."""
+        """Create subdirectories if they do not exist and build the index."""
         def _ensure() -> None:
             for sub in self._SUBDIRS:
                 (self._memory_dir / sub).mkdir(parents=True, exist_ok=True)
 
         await asyncio.to_thread(_ensure)
+        self._build_index()
         self._initialized = True
 
     async def close(self) -> None:
@@ -185,6 +192,47 @@ class FileMemoryStore(MemoryStore):
         content = _build_frontmatter(meta) + body.rstrip() + "\n"
         tmp.write_text(content, encoding="utf-8")
         tmp.rename(path)
+
+    def _build_index(self) -> None:
+        """Scan all .md files and build the in-memory metadata index."""
+        for subdir in self._SUBDIRS:
+            files = self._list_md(subdir)
+            for path in files:
+                try:
+                    meta, _body = self._read_file(path)
+                    # Build index key: subdirectory/event_id
+                    key = f"{subdir}/{meta.get('event_id', '')}"
+                    if key.endswith("/"):
+                        continue  # skip entries without an event_id
+                    self._index[key] = (str(path), {
+                        "event_id": meta.get("event_id", ""),
+                        "event_type": meta.get("event_type", ""),
+                        "conversation_id": meta.get("conversation_id", ""),
+                        "timestamp": meta.get("timestamp", ""),
+                    })
+                except Exception:
+                    continue
+
+    def _persist_index(self) -> None:
+        """Write the in-memory index to disk atomically."""
+        if not self._index_path:
+            return
+        try:
+            serializable = {
+                key: (path, meta)
+                for key, (path, meta) in self._index.items()
+            }
+            self._index_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._index_path.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(serializable, f)
+            os.replace(tmp, self._index_path)
+        except Exception:
+            logger.debug("failed to persist index sidecar")
+
+    async def _rebuild_index(self) -> None:
+        """Rebuild the in-memory index from disk (runs in a thread)."""
+        await asyncio.to_thread(self._build_index)
 
     def _scoring_search(
         self, subdir: str, query: str, limit: int, **filters: Any
@@ -275,6 +323,8 @@ class FileMemoryStore(MemoryStore):
         path = self._memory_dir / "semantic" / f"{fact_id}.md"
         if path.exists():
             await asyncio.to_thread(path.unlink)
+        # Clean up stale index entry
+        self._index.pop(f"semantic/{fact_id}", None)
 
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
         """Keyword-token search on semantic facts, ranked by relevance."""
@@ -341,6 +391,7 @@ class FileMemoryStore(MemoryStore):
         }
         path = self._memory_dir / "episodic" / f"{event_id}.md"
         await asyncio.to_thread(self._write_file, path, meta, summary)
+        await self._rebuild_index()
         return event_id
 
     async def episodic_search(
@@ -380,90 +431,103 @@ class FileMemoryStore(MemoryStore):
             # Vector/token search found nothing — fall back to full scan
             # so metadata filters still work.
 
-        # No query — scan all files
-        files = self._list_md("episodic")
-        records: list[tuple[float, dict]] = []
-
-        for path in files:
-            try:
-                meta, body = self._read_file(path)
-            except Exception:
+        # No query — use index for filtered scan
+        candidates: list[tuple[float, dict, str]] = []
+        for key, (path_str, meta) in self._index.items():
+            if not key.startswith("episodic/"):
                 continue
-
-            if event_types is not None:
-                if meta.get("event_type", "") not in event_types:
-                    continue
-
+            if event_types is not None and meta.get("event_type", "") not in event_types:
+                continue
+            ts = meta.get("timestamp", "")
             if time_range is not None:
-                ts = meta.get("timestamp", "")
                 if ts < time_range[0] or ts > time_range[1]:
                     continue
+            candidates.append((self._parse_ts(ts), meta, path_str))
 
-            payload_raw = meta.get("payload", "{}")
-            records.append((self._parse_ts(meta.get("timestamp", "")), {
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        # Read bodies for the top N only
+        result: list[dict] = []
+        for _ts, meta, path_str in candidates[:limit]:
+            try:
+                _, body = self._read_file(Path(path_str))
+            except Exception:
+                body = ""
+            result.append({
                 "event_id": meta.get("event_id", ""),
                 "event_type": meta.get("event_type", "unknown"),
                 "conversation_id": meta.get("conversation_id"),
                 "timestamp": meta.get("timestamp", ""),
                 "summary": body,
-                "payload": payload_raw,
+                "payload": meta.get("payload", "{}"),
                 "created_at": meta.get("created_at", ""),
-            }))
-
-        records.sort(key=lambda x: x[0], reverse=True)
-        return [r for _ts, r in records[:limit]]
+            })
+        return result
 
     async def episodic_get_conversation(
         self, conversation_id: str
     ) -> list[dict]:
         """Retrieve all events for a conversation, ordered by time."""
-        files = self._list_md("episodic")
-        records: list[tuple[float, dict]] = []
+        matches: list[tuple[float, dict, str]] = []
 
-        for path in files:
-            try:
-                meta, body = self._read_file(path)
-            except Exception:
+        for key, (path_str, meta) in self._index.items():
+            if not key.startswith("episodic/"):
                 continue
-
             if meta.get("conversation_id") != conversation_id:
                 continue
+            matches.append((self._parse_ts(meta.get("timestamp", "")), meta, path_str))
 
-            payload_raw = meta.get("payload", "{}")
-            records.append((self._parse_ts(meta.get("timestamp", "")), {
+        matches.sort(key=lambda x: x[0])
+
+        result: list[dict] = []
+        for _ts, meta, path_str in matches:
+            try:
+                _, body = self._read_file(Path(path_str))
+            except Exception:
+                body = ""
+            result.append({
                 "event_id": meta.get("event_id", ""),
                 "event_type": meta.get("event_type", "unknown"),
                 "conversation_id": meta.get("conversation_id"),
                 "timestamp": meta.get("timestamp", ""),
                 "summary": body,
-                "payload": payload_raw,
+                "payload": meta.get("payload", "{}"),
                 "created_at": meta.get("created_at", ""),
-            }))
-
-        records.sort(key=lambda x: x[0])
-        return [r for _ts, r in records]
+            })
+        return result
 
     async def episodic_prune(self, before_timestamp: str) -> int:
-        """Remove events older than *before_timestamp*. Returns count deleted."""
-        files = self._list_md("episodic")
-        ids_to_delete: list[Path] = []
+        """Delete episodic events older than *before_timestamp*.
 
-        for path in files:
+        Uses the in-memory index to filter by timestamp without
+        reading all file bodies.  Rebuilds the index first to
+        pick up any out-of-band file changes.
+        """
+        await self._rebuild_index()
+        to_delete: list[tuple[str, str]] = []  # (path_str, key)
+
+        for key, (path_str, meta) in self._index.items():
+            if not key.startswith("episodic/"):
+                continue
+            if meta.get("timestamp", "") < before_timestamp:
+                to_delete.append((path_str, key))
+
+        if not to_delete:
+            return 0
+
+        # Delete files and remove from index
+        count = 0
+        for path_str, key in to_delete:
             try:
-                meta, _ = self._read_file(path)
+                Path(path_str).unlink()
+                del self._index[key]
+                count += 1
             except Exception:
                 continue
 
-            ts = meta.get("timestamp", "")
-            if ts < before_timestamp:
-                ids_to_delete.append(path)
-
-        if ids_to_delete:
-            await asyncio.to_thread(
-                lambda: [p.unlink() for p in ids_to_delete]
-            )
-
-        return len(ids_to_delete)
+        # Persist updated index
+        self._persist_index()
+        return count
 
     # ── Procedural operations ────────────────────────────────────
 
@@ -596,3 +660,5 @@ class FileMemoryStore(MemoryStore):
         path = self._memory_dir / subdir / f"{target_id}.md"
         if path.exists():
             await asyncio.to_thread(path.unlink)
+        # Clean up stale index entry if it exists
+        self._index.pop(f"{subdir}/{target_id}", None)
