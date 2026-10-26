@@ -14,7 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -96,12 +96,22 @@ class FactResult(BaseModel):
 
 
 class PlannerResult(BaseModel):
-    """Planner decision: whether to retrieve from memory, what to search, and observations."""
+    """Planner decision: whether to retrieve from memory, where to search, and observations."""
 
     retrieve: bool = Field(
+        default=False,
         description=(
             "Whether this query benefits from looking up user memory. "
             "Use false for simple queries (greetings, one-word, obvious answers)."
+        ),
+    )
+    source: Literal["semantic", "episodic", "both"] = Field(
+        default="semantic",
+        description=(
+            "Where to look for relevant information. Use 'episodic' for "
+            "questions about past conversations, dates, or events. Use "
+            "'semantic' for user facts/preferences. Use 'both' if query "
+            "might need either or both."
         ),
     )
     queries: list[str] = Field(
@@ -195,18 +205,25 @@ class Gaia:
         return Agent(
             model,
             instructions=(
-                "You are a memory-aware planning assistant. "
-                "Given the user's message and recent conversation context, "
-                "decide whether to look up relevant facts from the user's memory.\n\n"
+                "You are a memory-aware planning assistant. Given the user's message and recent "
+                "conversation context, decide whether to look up relevant information from the "
+                "user's memory.\n\n"
                 "Rules:\n"
                 "  - retrieve: true for questions about tools, preferences, recommendations,\n"
-                "    or anything that benefits from knowing the user. false for greetings,\n"
-                "    simple one-word queries, or obvious factual questions.\n"
-                "  - queries: 1-3 short search phrases (e.g. 'CLI tool preferences', "
-                "'Python tech stack'). Keep them general — they are vector-searched.\n"
-                "  - note: save a brief observation about the user if they revealed "
-                "something new (preferences, context, tech stack changes). Leave empty "
-                "for routine messages.\n"
+                "    past conversations, dates, or anything that benefits from looking up\n"
+                "    the user's memory. false for greetings, simple one-word queries,\n"
+                "    or obviously factual questions.\n"
+                "  - source: 'episodic' for questions about what was discussed, when,\n"
+                "    or specific events (e.g. 'what did we talk about?', 'did we discuss\n"
+                "    Python last week?'). 'semantic' for questions about user facts,\n"
+                "    preferences, tech stack, or stored knowledge. 'both' when the query\n"
+                "    might need either or both.\n"
+                "  - queries: 1-3 short search phrases tailored to the source:\n"
+                "    - For 'semantic' or 'both': general phrases like 'CLI tools', 'Python\n"
+                "      tech stack'. Keep them general for vector search.\n"
+                "    - For 'episodic' or 'both': topic keywords (e.g. 'Python debugging').\n"
+                "  - note: save a brief observation about the user if they revealed\n"
+                "    something new. Leave empty for routine messages.\n"
             ),
             output_type=PlannerResult,
         )
@@ -514,14 +531,36 @@ class Gaia:
                 planner_output: PlannerResult = planner_result.output
 
                 if planner_output.retrieve and planner_output.queries:
-                    # 2. Retrieve relevant semantic facts for each query
+                    source = planner_output.source
                     for query in planner_output.queries:
-                        facts = await self._memory.semantic_search(query, limit=3)
-                        for fact in facts:
-                            content = fact.get("content", "")
-                            confidence = fact.get("confidence", 1.0)
-                            if content and confidence >= 0.5:
-                                context_blocks.append(f"- {content}")
+                        if source in ("semantic", "both"):
+                            facts = await self._memory.semantic_search(query, limit=3)
+                            for fact in facts:
+                                content = fact.get("content", "")
+                                confidence = fact.get("confidence", 1.0)
+                                if content and confidence >= 0.5:
+                                    context_blocks.append(f"[fact] {content}")
+
+                        if source in ("episodic", "both"):
+                            events = await self._memory.episodic_search(query, limit=5)
+                            for evt in events:
+                                payload_raw = evt.get("payload", "{}")
+                                if isinstance(payload_raw, str):
+                                    try:
+                                        payload_raw = json.loads(payload_raw)
+                                    except (json.JSONDecodeError, ValueError):
+                                        payload_raw = {}
+                                user_prompt = payload_raw.get("user_prompt", "")
+                                agent_response = payload_raw.get("agent_response", "")
+                                if user_prompt and agent_response:
+                                    summary = (
+                                        f"[conversation] You: {user_prompt[:120]} ... "
+                                        f"Agent: {agent_response[:200]} ..."
+                                    )
+                                    context_blocks.append(summary)
+                                elif user_prompt:
+                                    context_blocks.append(f"[conversation] You: {user_prompt[:200]}")
+
                     # Deduplicate by content
                     seen = set()
                     unique_blocks: list[str] = []
