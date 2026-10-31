@@ -10,6 +10,8 @@ dependencies = [
     "pydantic-ai>=2.40.0",
     "pydantic-ai-harness>=0.29.0",
     "ruff>=0.16.9",
+    "scikit-learn>=1.9.1",
+    "sentence-transformers>=6.2.0",
     "textual>=8.2.8",
 ]
 
