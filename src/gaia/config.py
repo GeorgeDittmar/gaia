@@ -1,18 +1,100 @@
 """Application configuration and persistence helpers."""
 
 import json
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-SETTINGS_FILE = Path("settings.json")
+SETTINGS_DIR = Path(os.path.expanduser("~/.gaia"))
+SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
-DEFAULT_SETTINGS: Dict[str, Any] = {
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    """In-memory configuration for the memory store backend.
+
+    Direct construction is not recommended — use
+    ``Settings.from_dict()`` which validates the backend value.
+    """
+
+    backend: str = "file"  # "file" or "chroma"
+    memory_dir: str = "~/.gaia/memory"
+    retention_days: int = 30
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Immutable application settings loaded from ``settings.json``."""
+
+    model: str = "qwen2.5-coder:32b"
+    endpoint: str = "http://127.0.0.1:8080"
+    encrypted: bool = True
+    system_prompt: str = (
+        "You are G.A.I.A., an advanced, secure local AI agent. "
+        "Provide clear, direct, and technically rigorous assistance. "
+        "Your sole task is to be the best personal assistant to the user. "
+        "They are your best friend and ally. "
+        "You will never harm the user, you must do your best to assist the user "
+        "whenever they ask or with whatever they need."
+    )
+    max_context_tokens: int = 4000
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Settings":
+        """Merge *d* over defaults, validate, return ``Settings``."""
+        mem_cfg = d.get("memory") or {}
+        if not isinstance(mem_cfg, dict):
+            mem_cfg = {}
+        backend = mem_cfg.get("backend", "file")
+        if backend not in ("file", "chroma"):
+            backend = "file"
+        return cls(
+            model=d.get("model", cls.model),
+            endpoint=d.get("endpoint", cls.endpoint),
+            encrypted=d.get("encrypted", cls.encrypted),
+            system_prompt=d.get("system_prompt", cls.system_prompt),
+            max_context_tokens=d.get(
+                "max_context_tokens", cls.max_context_tokens
+            ),
+            memory=MemoryConfig(
+                backend=backend,
+                memory_dir=d.get("memory_dir", "~/.gaia/memory"),
+                retention_days=mem_cfg.get("retention_days", MemoryConfig.retention_days),
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize back to a plain dict for JSON persistence.
+
+        ``memory_dir`` is kept at the top level to match the on-disk
+        ``DEFAULT_SETTINGS`` shape; ``load_config()`` always merges
+        over that dict before calling ``from_dict()``, so the round-trip
+        is safe in practice.
+        """
+        return {
+            "model": self.model,
+            "endpoint": self.endpoint,
+            "encrypted": self.encrypted,
+            "system_prompt": self.system_prompt,
+            "max_context_tokens": self.max_context_tokens,
+            "memory_dir": self.memory.memory_dir,
+            "memory": {
+                "backend": self.memory.backend,
+                "retention_days": self.memory.retention_days,
+            },
+        }
+
+DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
-    "endpoint": "http://localhost:11434",
+    "endpoint": "http://127.0.0.1:8080",
     "encrypted": True,
-    "memory_db": "gaia-memory.db",
+    "max_context_tokens": 4000,
+    "memory_dir": "~/.gaia/memory",
     "memory": {
-        "backend": "sqlite",  # "sqlite" or "chroma"
+        "backend": "file",  # "file" or "chroma"
+        "retention_days": 30,
     },
     "system_prompt": (
         "You are G.A.I.A., an advanced, secure local AI agent. "
@@ -43,33 +125,39 @@ SLASH_COMMANDS = [
     {"cmd": "/extract", "desc": "Auto-extract facts from recent conversation history"},
     {"cmd": "/extract-debug", "desc": "Extract facts and show raw LLM output in chat"},
     {"cmd": "/debug", "desc": "Toggle debug mode (on/off) — controls whether extraction status shows in chat"},
+    {"cmd": "/summary", "desc": "View the current user summary"},
+    {"cmd": "/regenerate", "desc": "Regenerate the user summary from conversation data"},
 ]
 
 
-def save_config(config: Dict[str, Any]) -> None:
-    """Persist *config* to the settings file on disk."""
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4)
+def save_config(settings: Settings) -> None:
+    """Persist *settings* to the settings file on disk (atomically)."""
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(settings.to_dict(), f, indent=4)
+    os.replace(tmp, SETTINGS_FILE)
 
 
-def load_config() -> Dict[str, Any]:
+def load_config() -> Settings:
     """Read settings from disk.
 
     Creates *settings.json* with defaults if it is missing.
-    Returns *DEFAULT_SETTINGS* on any read error.
+    Returns defaults on any read error.
     """
     if not SETTINGS_FILE.exists():
         try:
-            save_config(DEFAULT_SETTINGS)
+            save_config(Settings())
         except Exception:
             pass
-        return DEFAULT_SETTINGS.copy()
+        return Settings()
 
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return {**DEFAULT_SETTINGS, **json.load(f)}
+            raw = {**DEFAULT_SETTINGS, **json.load(f)}
+            return Settings.from_dict(raw)
     except Exception:
-        return DEFAULT_SETTINGS.copy()
+        return Settings()
 
 
 def parse_slash_command(raw_command: str) -> tuple[str, str]:

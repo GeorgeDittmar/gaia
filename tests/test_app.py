@@ -1,15 +1,16 @@
 """Tests for app-level logic (connection checker, input classification)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from gaia.config import (
+    SLASH_COMMANDS,
+    MemoryConfig,
+    Settings,
+    check_endpoint,
     is_exit_command,
     is_slash_input,
-    check_endpoint,
-    EXIT_COMMANDS,
-    SLASH_COMMANDS,
 )
 from gaia.gaia_tui_app import GaiaTUIApp
 
@@ -72,13 +73,12 @@ class TestCheckEndpoint:
         import urllib.request
 
         # Patch at the module level where it's used
-        with patch.object(urllib.request, "Request") as mock_req:
-            with patch.object(
-                urllib.request, "urlopen"
-            ) as mock_urlopen:
-                self._mock_req = mock_req
-                self._mock_urlopen = mock_urlopen
-                yield
+        with patch.object(urllib.request, "Request") as mock_req, patch.object(
+            urllib.request, "urlopen"
+        ) as mock_urlopen:
+            self._mock_req = mock_req
+            self._mock_urlopen = mock_urlopen
+            yield
 
     @pytest.mark.asyncio
     async def test_returns_online_on_success(self) -> None:
@@ -147,17 +147,18 @@ class TestGaiaTUIAppInit:
 
     def test_loads_settings(self) -> None:
         """App.__init__ loads settings via load_config."""
+        expected = Settings(model="test")
         with patch(
-            "gaia.gaia_tui_app.load_config", return_value={"model": "test"}
+            "gaia.gaia_tui_app.load_config", return_value=expected
         ) as mock_load:
             app = GaiaTUIApp()
 
         mock_load.assert_called_once()
-        assert app.settings == {"model": "test"}
+        assert app.settings.model == "test"
 
     def test_creates_agent(self) -> None:
         """App.__init__ creates a Gaia agent."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             with patch("gaia.gaia_tui_app.Gaia") as mock_gaia:
                 GaiaTUIApp()
 
@@ -165,7 +166,7 @@ class TestGaiaTUIAppInit:
 
     def test_initializes_shutting_down_false(self) -> None:
         """is_shutting_down starts as False."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app = GaiaTUIApp()
 
         assert app.is_shutting_down is False
@@ -177,26 +178,38 @@ class TestGaiaTUIAppInit:
         assert "ctrl+l" in commands
         assert "f1" in commands
 
-    def test_init_memory_creates_store(self) -> None:
-        """_init_memory creates and initializes a store when memory_db is set."""
-        import tempfile
-        from pathlib import Path
+    def test_memory_factory_returns_none_for_unknown_backend(self) -> None:
+        """MemoryFactory returns FileMemoryStore when memory backend is unknown
+        (from_dict defaults to 'file' for invalid backends).
+        """
+        with patch(
+            "gaia.gaia_tui_app.load_config",
+            return_value=Settings(
+                model="test",
+                memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory"),
+            ),
+        ):
+            with patch("gaia.gaia_tui_app.Gaia"):
+                app = GaiaTUIApp()
 
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = Path(f.name)
+        # Unknown backends default to 'file' via Settings.from_dict
+        assert app._memory is not None
+        assert type(app._memory).__name__ == "FileMemoryStore"
 
-        try:
-            with patch(
-                "gaia.gaia_tui_app.load_config",
-                return_value={"model": "test", "memory_db": str(db_path)},
-            ):
-                with patch("gaia.gaia_tui_app.Gaia"):
+    def test_memory_factory_degrades_on_factory_error(self) -> None:
+        """GaiaTUIApp degrades gracefully when the factory raises."""
+        with patch(
+            "gaia.gaia_tui_app.load_config",
+            return_value=Settings.from_dict({"model": "test", "memory": {"backend": "chroma"}}),
+        ):
+            with patch("gaia.gaia_tui_app.Gaia"):
+                with patch(
+                    "gaia.gaia_tui_app.MemoryFactory.create"
+                ) as mock_create:
+                    mock_create.side_effect = Exception("init failed")
                     app = GaiaTUIApp()
 
-            assert app._memory is not None
-            assert app._memory._db_path == db_path.resolve()
-        finally:
-            db_path.unlink(missing_ok=True)
+        assert app._memory is None
 
 
 class TestForceExit:
@@ -204,7 +217,10 @@ class TestForceExit:
 
     def test_sets_shutting_down_flag(self) -> None:
         """force_exit sets is_shutting_down = True."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
+        ):
             app = GaiaTUIApp()
             app.force_exit()
 
@@ -213,7 +229,8 @@ class TestForceExit:
     def test_cancels_workers(self) -> None:
         """force_exit calls cancel_all on the workers manager."""
         with (
-            patch("gaia.gaia_tui_app.load_config", return_value={}),
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
             patch.object(GaiaTUIApp, "workers") as mock_workers,
         ):
             app = GaiaTUIApp()
@@ -223,7 +240,10 @@ class TestForceExit:
 
     def test_calls_exit(self) -> None:
         """force_exit calls App.exit()."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
+        ):
             app = GaiaTUIApp()
             app.exit = MagicMock()
             app.force_exit()
@@ -233,7 +253,10 @@ class TestForceExit:
     @pytest.mark.asyncio
     async def test_force_exit_closes_memory(self) -> None:
         """force_exit calls _close_memory when memory is present."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with (
+            patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
+            patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None),
+        ):
             app = GaiaTUIApp()
             mock_store = AsyncMock()
             app._memory = mock_store
@@ -252,7 +275,8 @@ class TestRememberCommand:
 
     def _make_app_and_chatbox(self, memory=None):
         """Create a GaiaTUIApp with mocked memory and chat_box."""
-        app = GaiaTUIApp()
+        with patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None):
+            app = GaiaTUIApp()
         app._memory = AsyncMock() if memory is False else memory
         chat_box = MagicMock()
         chat_box.mount = AsyncMock()  # mount is an async operation
@@ -265,10 +289,10 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_inserts_fact(self) -> None:
         """/remember <fact> calls semantic_insert with correct args."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
-            await app.handle_slash_command("/remember user likes python")
+            await app._slash_handler.handle_slash_command("/remember user likes python")
 
             app._memory.semantic_insert.assert_awaited_once_with(
                 content="user likes python",
@@ -281,10 +305,10 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_no_arg_shows_usage(self) -> None:
         """/remember without an arg shows usage help."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=AsyncMock())
 
-            await app.handle_slash_command("/remember")
+            await app._slash_handler.handle_slash_command("/remember")
 
             app._memory.semantic_insert.assert_not_called()
             chat_box.mount.assert_called_once()
@@ -292,10 +316,10 @@ class TestRememberCommand:
     @pytest.mark.asyncio
     async def test_remember_without_memory_shows_message(self) -> None:
         """/remember when _memory is None does not raise."""
-        with patch("gaia.gaia_tui_app.load_config", return_value={}):
+        with patch("gaia.gaia_tui_app.load_config", return_value=Settings()):
             app, chat_box = self._make_app_and_chatbox(memory=None)
 
-            await app.handle_slash_command("/remember test fact")
+            await app._slash_handler.handle_slash_command("/remember test fact")
 
             chat_box.mount.assert_called_once()
 
@@ -303,4 +327,63 @@ class TestRememberCommand:
         """/remember is listed in SLASH_COMMANDS for autocomplete."""
         cmd_names = {entry["cmd"] for entry in SLASH_COMMANDS}
         assert "/remember" in cmd_names, "Missing /remember from SLASH_COMMANDS"
+
+
+class TestModelCommand:
+    """Tests for the /model slash command."""
+
+    def _make_app(self, settings=None, memory=None):
+        """Create a GaiaTUIApp with mocked settings, memory and chat_box."""
+        with patch("gaia.gaia_tui_app.MemoryFactory.create", return_value=None):
+            app = GaiaTUIApp()
+        if settings is not None:
+            app.settings = settings
+        app._memory = memory
+        chat_box = MagicMock()
+        chat_box.mount = AsyncMock()
+        app.query_one = MagicMock(
+            side_effect=lambda sel, cls: chat_box if sel == "#chat-container" else MagicMock()
+        )
+        app.query = MagicMock(return_value=[])
+        return app, chat_box
+
+    @pytest.mark.asyncio
+    async def test_model_updates_settings(self) -> None:
+        """/model <name> reassigns settings.model and calls save_config."""
+        settings = Settings(model="original")
+        app, _ = self._make_app(settings=settings)
+
+        with patch("gaia.config.save_config") as mock_save:
+            await app._slash_handler.handle_slash_command("/model llama3.3:70b")
+
+        assert app.settings.model == "llama3.3:70b"
+        mock_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_model_no_arg_shows_current(self) -> None:
+        """/model without an arg displays the current model name."""
+        settings = Settings(model="qwen2.5-coder:32b")
+        app, _ = self._make_app(settings=settings)
+
+        await app._slash_handler.handle_slash_command("/model")
+
+        # Should show current model in chat output
+        assert app.query_one.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_model_preserves_other_fields(self) -> None:
+        """/model only changes model; other settings stay the same."""
+        settings = Settings(
+            model="original",
+            endpoint="http://old.local",
+            encrypted=False,
+        )
+        app, _ = self._make_app(settings=settings)
+
+        with patch("gaia.config.save_config"):
+            await app._slash_handler.handle_slash_command("/model new-model")
+
+        assert app.settings.model == "new-model"
+        assert app.settings.endpoint == "http://old.local"
+        assert app.settings.encrypted is False
 

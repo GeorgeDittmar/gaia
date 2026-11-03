@@ -1,12 +1,11 @@
 """Custom input widget with slash-command autocomplete."""
 
-from typing import Dict, List
 
 from textual.reactive import reactive
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
-from gaia.config import SLASH_COMMANDS, AVAILABLE_MODELS
+from gaia.config import AVAILABLE_MODELS, SLASH_COMMANDS
 
 
 class CommandInput(Input):
@@ -66,7 +65,7 @@ class CommandInput(Input):
         else:
             self._hide_popup()
 
-    def _render_suggestions(self, items: List[Dict[str, str]]) -> None:
+    def _render_suggestions(self, items: list[dict[str, str]]) -> None:
         if not items:
             self._hide_popup()
             return

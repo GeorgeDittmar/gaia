@@ -1,16 +1,16 @@
 """Settings / configuration modal dialog."""
 
-from typing import Any, Dict
+from typing import Any
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Button, Switch, Label, TextArea
-from textual.containers import ScrollableContainer, Horizontal, Vertical
+from textual.widgets import Button, Input, Label, Static, Switch, TextArea
 
-from gaia.config import DEFAULT_SETTINGS
+from gaia.config import DEFAULT_SETTINGS, Settings
 
 
-class SettingsModal(ModalScreen[Dict[str, Any]]):
+class SettingsModal(ModalScreen[dict[str, Any] | None]):
     """Interactive pop-up sub-window for system configuration."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -112,7 +112,7 @@ class SettingsModal(ModalScreen[Dict[str, Any]]):
     }
     """
 
-    def __init__(self, current_settings: Dict[str, Any]):
+    def __init__(self, current_settings: Settings):
         super().__init__()
         self.current_settings = current_settings
 
@@ -123,29 +123,21 @@ class SettingsModal(ModalScreen[Dict[str, Any]]):
             with ScrollableContainer(id="dialog-scroll"):
                 yield Label("Active Model Name:", classes="field-label")
                 yield Input(
-                    value=str(self.current_settings.get("model", "qwen2.5-coder:32b")),
+                    value=str(self.current_settings.model),
                     placeholder="e.g. qwen2.5-coder:32b, llama3.3:70b",
                     id="model-input",
                 )
 
                 yield Label("API Base URL:", classes="field-label")
                 yield Input(
-                    value=str(
-                        self.current_settings.get(
-                            "endpoint", "http://localhost:11434"
-                        )
-                    ),
-                    placeholder="http://localhost:11434",
+                    value=str(self.current_settings.endpoint),
+                    placeholder="http://127.0.0.1:8080",
                     id="endpoint-input",
                 )
 
                 yield Label("System Prompt:", classes="field-label")
                 yield TextArea(
-                    text=str(
-                        self.current_settings.get(
-                            "system_prompt", DEFAULT_SETTINGS["system_prompt"],
-                        )
-                    ),
+                    text=str(self.current_settings.system_prompt),
                     id="system-prompt-textarea",
                 )
 
@@ -154,7 +146,7 @@ class SettingsModal(ModalScreen[Dict[str, Any]]):
                         "SQLCipher Vault Encryption:", classes="switch-label"
                     )
                     yield Switch(
-                        value=bool(self.current_settings.get("encrypted", True)),
+                        value=bool(self.current_settings.encrypted),
                         id="encrypt-switch",
                     )
 
@@ -184,12 +176,12 @@ class SettingsModal(ModalScreen[Dict[str, Any]]):
             ),
             "endpoint": (
                 self.query_one("#endpoint-input", Input).value.strip()
-                or "http://localhost:11434"
+                or DEFAULT_SETTINGS["endpoint"]
             ),
             "system_prompt": (
                 self.query_one("#system-prompt-textarea", TextArea).text.strip()
                 or DEFAULT_SETTINGS["system_prompt"]
             ),
-            "encrypted": self.query_one("#encrypt-switch", Switch).value,
+            "encrypted": bool(self.query_one("#encrypt-switch", Switch).value),
         }
         self.dismiss(updated_config)

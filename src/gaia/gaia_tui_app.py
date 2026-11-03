@@ -1,44 +1,47 @@
-"""Main G.A.I.A. terminal UI application (GaiaTUIApp)."""
+"""Main G.A.I.A. terminal UI application (GaiaTUIApp).
+
+This module defines the Textual application, chat turns, and UI layout.
+Business logic is extracted into separate modules:
+
+- ``slash_commands`` — slash command dispatch
+- ``streaming`` — agent streaming loop
+- ``memory_lifecycle`` — memory store initialisation and shutdown
+"""
 
 import asyncio
-import json
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict
 
-from textual.app import App, ComposeResult
-from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Button, Switch, Label, TextArea
-from textual.widgets.option_list import Option
-from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.reactive import reactive
+from textual.widgets import Input, Static
 
-from gaia.core.agent import Gaia
-from gaia.core.memory import ChromaMemoryStore, SQLiteMemoryStore
-from gaia.config import (
-    DEFAULT_SETTINGS,
-    load_config,
-    save_config,
-    check_endpoint,
-    parse_slash_command,
-)
 from gaia.command_input import CommandInput
+from gaia.config import (
+    AVAILABLE_MODELS,
+    check_endpoint,
+    load_config,
+    Settings,
+    SETTINGS_DIR,
+)
+from gaia.core.agent import Gaia
+from gaia.core.memory.factory import MemoryFactory
 from gaia.help_modal import HelpModal
-from gaia.settings_modal import SettingsModal
-
-from datetime import datetime
+from gaia.memory_lifecycle import MemoryLifecycle
+from gaia.slash_commands import SlashCommandHandler
+from gaia.streaming import run_agent_stream
 
 logger = logging.getLogger("gaia.tui")
-
-SETTINGS_FILE = Path("settings.json")
 
 
 def _setup_logging() -> None:
     """Configure file-based logging with a session timestamped log file."""
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = SETTINGS_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"gaia-{ts}.log"
 
     formatter = logging.Formatter(
@@ -105,9 +108,48 @@ class GaiaTUIApp(App):
 
     .llm-badge {
         text-style: bold;
-        padding: 0 1;
+        padding: 0 2;
         margin-right: 2;
+        margin-left: 2;
         content-align: center middle;
+        min-width: 30;
+    }
+
+    #llm-status-indicator {
+        height: 1;
+        min-height: 1;
+        padding: 0 2;
+        content-align: center middle;
+        min-width: 40;
+    }
+
+    .indicator-online {
+        background: #238636;
+        color: #ffffff;
+        text-style: bold;
+    }
+
+    .indicator-checking {
+        background: #d29922;
+        color: #0d1117;
+        text-style: bold;
+    }
+
+    .indicator-unreachable {
+        background: #da3633;
+        color: #ffffff;
+        text-style: bold;
+        border-left: wide #f85149;
+    }
+
+    #offline-banner {
+        height: 1;
+        background: #da3633;
+        color: #ffffff;
+        content-align: center middle;
+        text-style: bold;
+        dock: top;
+        visibility: hidden;
     }
 
     .status-online {
@@ -246,67 +288,163 @@ class GaiaTUIApp(App):
         super().__init__()
         _setup_logging()
         logger.info("GaiaTUIApp starting up")
-        self.settings = load_config()
-        self._memory = self._init_memory()
-        self.__core_agent = Gaia(
-            self.settings.get("system_prompt"),
-            memory=self._memory,
-        )
-        self.is_shutting_down = False
 
-    def _init_memory(self) -> "SQLiteMemoryStore | ChromaMemoryStore | None":
-        """Create a MemoryStore based on the configured backend.
-
-        Reads ``memory.backend`` from settings (``"sqlite"`` or ``"chroma"``).
-        Falls back to ``"sqlite"`` if unset or invalid.  Uses
-        ``asyncio.run()`` for the one-shot ``initialize()`` call since no
-        event loop exists in ``__init__``.
-        """
-        backend = self.settings.get("memory", {}).get("backend", "sqlite")
+        # Load AGENT.md as the canonical system prompt, then merge over
+        # settings.json so the settings modal shows the actual prompt.
+        agent_md = ""
         try:
-            match backend:
-                case "chroma":
-                    store = ChromaMemoryStore()
-                case "sqlite":
-                    db_path = self.settings.get("memory_db", "gaia-memory.db")
-                    encrypted = self.settings.get("encrypted", False)
-                    store = SQLiteMemoryStore(db_path, encrypted=encrypted)
-                case _:
-                    return None
-
-            asyncio.run(store.initialize())
-            return store
+            agent_md = Path("AGENT.md").read_text(encoding="utf-8")
         except Exception:
-            # Memory is optional — degrade gracefully
-            return None
+            logger.exception("failed to read AGENT.md — using settings.json")
+
+        raw_settings = load_config().to_dict()
+        if agent_md:
+            raw_settings["system_prompt"] = agent_md
+        self.settings = Settings.from_dict(raw_settings)
+
+        try:
+            self._memory = MemoryFactory.create(self.settings)
+        except Exception:
+            logger.exception("memory factory failed — memory disabled")
+            self._memory = None
+        self.__core_agent = Gaia(
+            system_prompt=self.settings.system_prompt,
+            model_name=self.settings.model,
+            endpoint=self.settings.endpoint,
+            memory=self._memory,
+            max_context_tokens=self.settings.max_context_tokens,
+        )
+        self._slash_handler = SlashCommandHandler(self)
+        self.is_shutting_down = False
+        self._turn_count = 0
+        self.__warn_if_unknown_model()
 
     async def _close_memory(self) -> None:
         """Close the memory store on shutdown."""
-        if self._memory is not None:
-            await self._memory.close()
+        await MemoryLifecycle.close(self._memory)
 
     def watch_connection_status(self, new_status: str) -> None:
-        """Reactive watcher that safely updates the status badge once mounted."""
+        """Reactive watcher that safely updates the status indicator and banner."""
         if not self.is_mounted:
             return
         try:
-            badge = self.query_one("#llm-status-badge", Static)
-            badge.update(f"LLM: {new_status}")
-            badge.remove_class(
-                "status-online", "status-checking", "status-unreachable"
+            indicator = self.query_one("#llm-status-indicator", Static)
+            indicator.remove_class(
+                "indicator-online", "indicator-checking", "indicator-unreachable"
             )
+            indicator.update(f"[bold]{new_status}[/bold]")
 
             if new_status == "ONLINE":
-                badge.add_class("status-online")
+                indicator.add_class("indicator-online")
+                # Hide offline banner
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(False)
             elif new_status == "CHECKING...":
-                badge.add_class("status-checking")
+                indicator.add_class("indicator-checking")
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(False)
             else:
-                badge.add_class("status-unreachable")
+                indicator.add_class("indicator-unreachable")
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(True)
 
             footer_status = self.query_one("#footer-status", Static)
             footer_status.update(f"[STATUS: {new_status}]")
         except Exception:
             pass
+
+    def __warn_if_unknown_model(self) -> None:
+        """Warn the user if the configured model is not in the known model list."""
+        known = {m["arg"] for m in AVAILABLE_MODELS}
+        if self.settings.model not in known:
+            logger.warning(
+                "UNRECOGNIZED MODEL '%s' — not in known models: %s",
+                self.settings.model,
+                ", ".join(sorted(known)),
+            )
+
+    @property
+    def core_agent(self) -> Gaia:
+        """Return the Gaia agent instance."""
+        return self._GaiaTUIApp__core_agent
+
+    # ── Fact extraction scheduling ─────────────────────────────────
+
+    _EXTRACT_EVERY_N_TURNS = 3
+    _SUMMARIZE_INTERVAL_MINUTES = 10
+    _SUMMARIZE_MIN_AGE_MINUTES = 30
+
+    def _schedule_startup_extraction(self) -> None:
+        """Extract facts from any episodic memory that hasn't been processed yet."""
+        if self._memory is None:
+            return
+        self.call_after_refresh(self._run_periodic_extraction)
+
+    @work(exclusive=False, thread=False)
+    async def _run_periodic_extraction(self) -> None:
+        """Batch-extract facts from episodic memory every N turns."""
+        if self._memory is None:
+            return
+        try:
+            count = await self._GaiaTUIApp__core_agent.extract_from_history(
+                max_turns=10,
+            )
+            if count > 0:
+                logger.info("periodic extraction saved %d facts", count)
+        except Exception:
+            logger.exception("periodic extraction failed")
+
+    @work(exclusive=False, thread=False)
+    async def _run_background_summary_check(self) -> None:
+        """Periodically check if the user summary should be regenerated.
+
+        Runs every ~10 minutes. Only regenerates if the current summary
+        is older than 30 minutes and there's new data to include.
+        Reschedules itself on completion.
+        """
+        if self._memory is None:
+            return
+        try:
+            last_time = self._GaiaTUIApp__core_agent._Gaia__last_summary_time
+            if last_time is None or (
+                datetime.now() - last_time
+            ).total_seconds() > self._SUMMARIZE_MIN_AGE_MINUTES * 60:
+                summary = await self._GaiaTUIApp__core_agent.generate_user_summary()
+                if summary:
+                    logger.info(
+                        "background summary refreshed (%d chars)", len(summary)
+                    )
+        except Exception:
+            logger.exception("background summary check failed")
+
+    def _schedule_background_summary(self) -> None:
+        """Start the background summary check timer using set_interval."""
+        self.set_interval(
+            self._SUMMARIZE_INTERVAL_MINUTES * 60,
+            self._run_background_summary_check,
+        )
+
+    @work(exclusive=False, thread=False)
+    async def _run_retention_check(self) -> None:
+        """Prune episodic memory older than retention_days."""
+        if self._memory is None:
+            return
+        before = (
+            datetime.now() - timedelta(days=self.settings.memory.retention_days)
+        ).isoformat()
+        try:
+            n = await self._memory.episodic_prune(before)
+            if n > 0:
+                logger.info("retention pruned %d episodes", n)
+        except Exception:
+            logger.exception("retention pruning failed")
+
+    def _schedule_retention(self) -> None:
+        """Start the retention pruning timer using set_interval."""
+        self.set_interval(
+            86400,  # every 24 hours (pruning is cheap, daily is fine)
+            self._run_retention_check,
+        )
 
     def force_exit(self) -> None:
         """Graceful shutdown: close memory, stop workers and exit.
@@ -337,11 +475,17 @@ class GaiaTUIApp(App):
             )
             yield Static("", classes="spacer")
             yield Static(
-                f"LLM: {self.connection_status}",
-                classes="llm-badge status-checking",
-                id="llm-status-badge",
+                f"[bold]{self.connection_status}[/bold]",
+                classes="indicator-checking",
+                id="llm-status-indicator",
             )
             yield Static("", id="header-config-info", classes="header-info")
+
+        yield Static(
+            "[bold red]⚠ LLM UNREACHABLE — cannot connect to the configured endpoint. "
+            "Check your settings or verify the server is running.[/bold red]",
+            id="offline-banner",
+        )
 
         with ScrollableContainer(id="chat-container"):
             yield Static(
@@ -379,6 +523,28 @@ class GaiaTUIApp(App):
         self.watch_connection_status(self.connection_status)
         self.ping_loop()
         self._mount_autocomplete_popup()
+        if self._memory is not None:
+            try:
+                task = MemoryLifecycle.create_init_task(self._memory)
+                self.__memory_init_task = task
+                task.add_done_callback(self.__on_memory_init_done)
+            except RuntimeError:
+                logger.warning("no event loop — memory init deferred")
+            except Exception:
+                logger.exception("memory init failed — memory disabled")
+                self._memory = None
+        if self._memory is not None:
+            self._schedule_startup_extraction()
+            self._schedule_background_summary()
+            self._schedule_retention()
+
+    def __on_memory_init_done(self, task: asyncio.Task) -> None:
+        """Retrieve the memory-initialisation result to suppress warnings."""
+        try:
+            task.result()
+        except Exception:
+            logger.exception("memory initialization failed — memory disabled")
+            self._memory = None
 
     def _mount_autocomplete_popup(self) -> None:
         """Create and mount the autocomplete popup into the input container.
@@ -398,11 +564,11 @@ class GaiaTUIApp(App):
         try:
             config_info = self.query_one("#header-config-info", Static)
             enc_label = (
-                "SQLCipher" if self.settings.get("encrypted", True) else "DISABLED"
+                "SQLCipher" if self.settings.encrypted else "DISABLED"
             )
             config_info.update(
-                f"MODEL: [bold #00f0ff]{self.settings.get('model', 'qwen2.5-coder:32b')}"
-                "[/bold #00f0ff] | VAULT: {enc_label}"
+                f"MODEL: [bold #00f0ff]{self.settings.model}"
+                f"[/bold #00f0ff] | VAULT: {enc_label}"
             )
         except Exception:
             pass
@@ -410,7 +576,7 @@ class GaiaTUIApp(App):
     @work(exclusive=True)
     async def ping_loop(self) -> None:
         while not self.is_shutting_down:
-            endpoint = self.settings.get("endpoint", "http://localhost:11434")
+            endpoint = self.settings.endpoint
             try:
                 status = await self._check_connection(endpoint)
             except Exception:
@@ -476,8 +642,11 @@ class GaiaTUIApp(App):
             return
 
         if user_text.startswith("/"):
-            await self.handle_slash_command(user_text)
+            await self._slash_handler.handle_slash_command(user_text)
             return
+
+        # Track turns for periodic fact extraction
+        self._turn_count += 1
 
         chat_box = self.query_one("#chat-container", ScrollableContainer)
         await chat_box.mount(
@@ -490,391 +659,16 @@ class GaiaTUIApp(App):
 
         self.run_agent_execution(user_text)
 
-    async def handle_slash_command(self, raw_command: str) -> None:
-        parts = raw_command[1:].split(maxsplit=1)
-        cmd = parts[0].lower() if parts else ""
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        chat_box = self.query_one("#chat-container", ScrollableContainer)
-
-        match cmd:
-            case "exit" | "quit" | "close":
-                self.force_exit()
-
-            case "help":
-                self.action_show_help()
-
-            case "model":
-                if arg:
-                    self.settings["model"] = arg
-                    save_config(self.settings)
-                    self._refresh_config_info()
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Active Model Updated:[/bold #00f0ff] {arg}",
-                            classes="agent-msg",
-                        )
-                    )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Current Model:[/bold #00f0ff] "
-                            f"{self.settings['model']}\n"
-                            "Usage: [bold]/model <model_name>[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "settings":
-
-                def on_settings_closed(
-                    new_config: Dict[str, Any] | None,
-                ) -> None:
-                    if new_config:
-                        self.settings.update(new_config)
-                        save_config(self.settings)
-                        self._refresh_config_info()
-
-                        self.call_after_refresh(
-                            chat_box.mount,
-                            ChatTurn(
-                                f"[bold #00f0ff]System Config Saved:[/bold #00f0ff]\n"
-                                f"  • Persisted to: "
-                                f"[bold]{SETTINGS_FILE.resolve()}[/bold]\n"
-                                f"  • Model: "
-                                f"[bold]{self.settings['model']}[/bold]\n"
-                                f"  • Endpoint: {self.settings['endpoint']}\n"
-                                f"  • System Prompt: "
-                                f"[dim]{self.settings['system_prompt'][:60]}...[/dim]\n"
-                                f"  • Vault Encryption: "
-                                f"{'Enabled' if self.settings['encrypted'] else 'Disabled'}",
-                                classes="agent-msg",
-                            ),
-                        )
-
-                self.push_screen(
-                    SettingsModal(self.settings), on_settings_closed
-                )
-
-            case "clear":
-                await chat_box.remove_children()
-                await chat_box.mount(
-                    Static(
-                        "[bold #ff007f]G.A.I.A. SYSTEM RESET[/bold #ff007f]\n"
-                        "[dim #8b949e]Terminal buffer cleared.[/dim #8b949e]\n",
-                        id="welcome",
-                    )
-                )
-
-            case "debug":
-                if arg.lower() == "on":
-                    self._debug_mode = True
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Debug:[/bold #ff007f] "
-                            "[bold #00f0ff]ON[/bold #00f0ff] — extraction status "
-                            "will appear in chat",
-                            classes="agent-msg",
-                        )
-                    )
-                elif arg.lower() == "off":
-                    self._debug_mode = False
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Debug:[/bold #ff007f] "
-                            "[bold #ff007f]OFF[/bold #ff007f] — extraction status hidden",
-                            classes="agent-msg",
-                        )
-                    )
-                else:
-                    state = "ON" if self._debug_mode else "OFF"
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #ff007f]Debug:[/bold #ff007f] {state} — "
-                            "usage: [bold]/debug on[/bold] or [bold]/debug off[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "status":
-                status_info = (
-                    "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
-                    f"  • LLM Endpoint Status: {self.connection_status}\n"
-                    f"  • Model Runtime: {self.settings['model']}\n"
-                    f"  • Host Endpoint: {self.settings['endpoint']}\n"
-                    f"  • System Prompt Length: "
-                    f"{len(self.settings.get('system_prompt', ''))} chars\n"
-                    f"  • Vault State: "
-                    f"{'AES-256 (SQLCipher)' if self.settings['encrypted'] else 'Unencrypted Plaintext'}\n"
-                    f"  • Config File: {SETTINGS_FILE.resolve()}"
-                )
-                await chat_box.mount(
-                    ChatTurn(status_info, classes="agent-msg")
-                )
-
-            case "remember":
-                if arg:
-                    if self._memory is not None:
-                        await self._memory.semantic_insert(
-                            content=arg,
-                            category="preference",
-                            confidence=1.0,
-                            source="user",
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #00f0ff]Fact Stashed:[/bold #00f0ff] "
-                                f"[dim #8b949e]{arg}[/dim #8b949e]",
-                                classes="agent-msg",
-                            )
-                        )
-                    else:
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                                "Memory store is not initialized.",
-                                classes="agent-msg",
-                            )
-                        )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Usage:[/bold #ff007f] "
-                            "/remember <fact to store>\n"
-                            "Example: [bold]/remember user prefers Python[/bold]",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "extract":
-                if self._memory is not None and self.__core_agent is not None:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #00f0ff]Extracting facts...[/bold #00f0ff]",
-                            classes="agent-msg",
-                            id="extract-status",
-                        )
-                    )
-                    chat_box.scroll_end()
-
-                    count = await self.__core_agent.extract_from_history(
-                        max_turns=10,
-                    )
-                    await chat_box.remove_children(
-                        predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-status"
-                    )
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
-                            f"[bold]{count}[/bold] facts extracted from recent history.",
-                            classes="agent-msg",
-                            id="extract-status",
-                        )
-                    )
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                            "Memory store is not initialized.",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case "extract-debug":
-                # Debug mode: do one extraction on the latest turn and show raw output
-                if self._memory is not None and self.__core_agent is not None:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #00f0ff]Debug extraction...[/bold #00f0ff]",
-                            classes="agent-msg",
-                            id="extract-debug-status",
-                        )
-                    )
-                    chat_box.scroll_end()
-
-                    # Get the latest turn from episodic memory
-                    results = await self._memory.episodic_search(
-                        query="conversation turn", limit=1
-                    )
-                    if results:
-                        latest = results[0]
-                        raw_payload = latest.get("payload", "{}")
-                        if isinstance(raw_payload, str):
-                            try:
-                                payload = json.loads(raw_payload)
-                            except (json.JSONDecodeError, ValueError):
-                                payload = {}
-                        else:
-                            payload = raw_payload
-                        user_msg = payload.get("user_prompt", "(none)")
-                        agent_resp = payload.get("agent_response", "(none)")
-                        status_text = (
-                            f"[dim #8b949e]=== DEBUG EXTRACTION ===[/dim #8b949e]\n"
-                            f"[dim]User: {user_msg[:200]}[/dim]\n"
-                            f"[dim]Agent: {agent_resp[:200]}[/dim]"
-                        )
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-debug-status"
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                status_text,
-                                classes="agent-msg",
-                                id="extract-debug-status",
-                            )
-                        )
-                        # Now actually run extraction
-                        count = await self.__core_agent.post_turn_extract(
-                            user_msg, agent_resp
-                        )
-                        # Show result
-                        await chat_box.mount(
-                            ChatTurn(
-                                f"[bold #00f0ff]Extracted & saved: {count} fact(s)[/bold #00f0ff]",
-                                classes="agent-msg",
-                            )
-                        )
-                    else:
-                        await chat_box.remove_children(
-                            predicate=lambda t: getattr(t, "default_attrs", {}).get("id") == "extract-debug-status"
-                        )
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]No conversation turns found in episodic memory.[/bold #007f]",
-                                classes="agent-msg",
-                            )
-                        )
-                    chat_box.scroll_end()
-                else:
-                    await chat_box.mount(
-                        ChatTurn(
-                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
-                            "Memory store is not initialized.",
-                            classes="agent-msg",
-                        )
-                    )
-
-            case _:
-                await chat_box.mount(
-                    ChatTurn(
-                        f"[bold #ff007f]Unknown Command:[/bold #ff007f] "
-                        f"/{cmd}. Type [bold]/[/bold] to browse valid commands.",
-                        classes="agent-msg",
-                    )
-                )
-
-        chat_box.scroll_end()
-
     @work(exclusive=True, thread=False)
     async def run_agent_execution(self, prompt: str) -> None:
-        chat_box = self.query_one("#chat-container", ScrollableContainer)
+        """Delegate to the streaming module, then trigger post-turn extraction."""
+        await run_agent_stream(self, prompt)
 
-        agent_widget = ChatTurn(
-            "[bold #00f0ff]G.A.I.A.:[/bold #00f0ff] ",
-            classes="agent-msg",
-        )
-        await chat_box.mount(agent_widget)
-
-        base_prefix = (
-            f"[bold #00f0ff]G.A.I.A. ({self.settings['model']}):[/bold #00f0ff] "
-        )
-        response_accumulator = ""
-        dots_states = [".  ", ".. ", "..."]
-        dot_index = 0
-        first_token_received = False
-
-        async def animate_waiting() -> None:
-            nonlocal dot_index
-            while not first_token_received and not self.is_shutting_down:
-                dot_text = dots_states[dot_index % len(dots_states)]
-                agent_widget.update(
-                    base_prefix + f"[dim #8b949e]{dot_text}[/dim #8b949e]"
-                )
-                dot_index += 1
-                await asyncio.sleep(0.2)
-
-        anim_task = asyncio.create_task(animate_waiting())
-
-        try:
-            async for token in self.__core_agent.ainteract(prompt=prompt):
-                if self.is_shutting_down:
-                    break
-
-                if not first_token_received:
-                    first_token_received = True
-                    anim_task.cancel()
-                    try:
-                        await anim_task
-                    except asyncio.CancelledError:
-                        pass
-                    response_accumulator = ""
-
-                response_accumulator += token
-                agent_widget.update(base_prefix + response_accumulator)
-                chat_box.scroll_end()
-        finally:
-            if not anim_task.done():
-                anim_task.cancel()
-                try:
-                    await anim_task
-                except asyncio.CancelledError:
-                    pass
-
-        agent_widget.update(base_prefix + response_accumulator)
-        chat_box.scroll_end()
-
-        # 5. Background fact extraction (never blocks response)
-        if self._memory is not None:
-            logger.info("scheduling fact extraction (memory=%s)", type(self._memory).__name__)
-            self.call_later(self._start_fact_extraction, prompt, response_accumulator)
-
-    def _start_fact_extraction(self, user_prompt: str, agent_response: str) -> None:
-        """Launch post-turn fact extraction as a background task."""
-        logger.info("extraction callback fired — prompt=%s", user_prompt[:80])
-        try:
-            asyncio.create_task(self._run_extraction(user_prompt, agent_response))
-        except Exception:
-            logger.exception("failed to create extraction task")
-
-    async def _run_extraction(
-        self, user_prompt: str, agent_response: str
-    ) -> None:
-        """Run extraction and show result in chat only if debug mode is on."""
-        logger.info("extraction running")
-        try:
-            count = await self.__core_agent.post_turn_extract(
-                user_prompt, agent_response
+        # Periodic batch extraction after every N agent responses
+        if self._memory is not None and (
+            self._turn_count % self._EXTRACT_EVERY_N_TURNS == 0
+        ):
+            logger.info(
+                "turn %d — triggering periodic fact extraction", self._turn_count
             )
-            logger.info("extraction complete — %d facts", count)
-            self.call_after_refresh(self._do_mount_extraction_status, count)
-        except Exception:
-            logger.exception("extraction task failed")
-
-    def _do_mount_extraction_status(self, count: int) -> None:
-        """Show a persistent message in the chat after extraction — only when debug is on."""
-        if not self._debug_mode:
-            return
-        try:
-            chat_box = self.query_one("#chat-container", ScrollableContainer)
-            if count > 0:
-                msg = (
-                    f"[bold #00f0ff]🧠 Memory[/bold #00f0ff] "
-                    f"[dim #8b949e]— {count} fact{'s' if count > 1 else ''} "
-                    f"auto-saved ✓[/dim #8b949e]"
-                )
-            else:
-                msg = (
-                    f"[bold #ff007f]🧠 Memory[/bold #ff007f] "
-                    f"[dim #8b949e]— no facts extracted ✗ "
-                    f"(run /extract-debug to see why)[/dim #8b949e]"
-                )
-            chat_box.mount(
-                ChatTurn(
-                    msg,
-                    classes="agent-msg",
-                    id="_auto-save-status",
-                )
-            )
-            chat_box.scroll_end()
-        except Exception:
-            pass
+            asyncio.get_event_loop().call_later(5, self._run_periodic_extraction)
