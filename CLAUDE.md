@@ -107,20 +107,94 @@ gaia/
   updates the `connection_status` `reactive` attribute, which triggers the badge colour
   change via `watch_connection_status`.
 
+### Memory architecture
+
+Memory is a **protocol** (`MemoryStore` in `src/gaia/core/memory/base.py`) with
+**pluggable backends**:
+
+- **`SQLiteMemoryStore`** — default. Single SQLite database with FTS5 virtual tables.
+  Bundled with the app — no external service needed.
+- **`ChromaMemoryStore`** — vector search via an **external ChromaDB HTTP server**.
+  Optional dependency (`chromadb` package). Connects to a separate container or
+  hosted service. Configure in settings:
+
+  ```json
+  {
+    "memory": { "backend": "chroma", "endpoint": "http://chroma:8000" }
+  }
+  ```
+
+To add a new backend: implement `MemoryStore` in a new file under
+`src/gaia/core/memory/`, add it to the `match` in `GaiaTUIApp._init_memory()`,
+and register it. The TUI, agent, and config don't need changes.
+
+### Container deployment
+
+The app connects to external services by URL — same pattern as the LLM endpoint:
+
+| Service | Default host (Docker)    | Default host (Podman)  | Port  |
+|---------|--------------------------|------------------------|-------|
+| LLM     | `host.docker.internal`   | `host.containers.internal` | 11434 |
+| ChromaDB| `host.docker.internal`   | `host.containers.internal` | 8000  |
+
+In `docker-compose.yml`, services talk via Docker/Podman internal DNS (host = service name).
+Use `make compose-up` or `gaia --compose` to start the full stack.
+
 ## How to run
 
-Dependencies are managed with **uv**.
+**Option 1 — uv (local install, recommended for development)**
+
+Dependencies are managed with **uv**. The package is built via **hatchling** and
+installed in-editable by `uv sync`.
 
 ```bash
-uv sync                 # install the locked dependencies into the venv
+uv sync                 # install locked deps + editable gaia package
 uv run python main.py   # launch the TUI
 gaia                    # same — uses the installed console script
 ```
 
-The `gaia` package is built via **hatchling** from `pyproject.toml` and is installed
-in-editable by `uv sync`, so `from gaia.core.agent import Gaia` and
-`from gaia.gaia_tui_app import GaiaTUIApp` both resolve without any `PYTHONPATH`
-shenanigans.
+For end users, install globally instead:
+
+```bash
+uv tool install --python 3.14 .   # pip-equivalent: uv tool install .
+gaia                              # launches the TUI
+```
+
+**Option 2 — Container (Podman or Docker)**
+
+No local Python needed. The container bundles everything; settings and memory
+persist in a bind mount at `~/.gaia`. Auto-detects Podman (preferred) or Docker.
+
+```bash
+# Build and run (auto-detects podman → docker)
+podman run -it --rm --network=host \
+  -v ~/.gaia:/home/gaia/data \
+  -e LLM_ENDPOINT="http://host.containers.internal:11434" \
+  -w /home/gaia \
+  gaia:latest
+
+# Install the wrapper script for convenience
+cp scripts/gaia-docker /usr/local/bin/gaia
+gaia                          # runs the container
+gaia --build                  # rebuild image first
+gaia --endpoint http://...    # override LLM endpoint
+```
+
+Docker equivalent (replaces `--network=host` with `--add-host`):
+
+```bash
+docker build -t gaia:latest .
+docker run -it --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -v ~/.gaia:/home/gaia/data \
+  -e LLM_ENDPOINT="http://host.docker.internal:11434" \
+  -w /home/gaia \
+  gaia:latest
+```
+
+The `gaia` package resolves correctly inside the container — stage 1 builds a
+wheel with `uv build`, stage 2 installs it via `pip install` from the pre-built
+wheel (no editable install across stages).
 
 The app needs a **local LLM endpoint already running** (see `settings.json`). The
 header shows `CHECKING…` → `ONLINE` / `UNREACHABLE` based on the live ping.

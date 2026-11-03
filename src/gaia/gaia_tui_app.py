@@ -1,6 +1,7 @@
 """Main G.A.I.A. terminal UI application (GaiaTUIApp)."""
 
 import asyncio
+import os
 import json
 import logging
 from pathlib import Path
@@ -15,7 +16,7 @@ from textual.containers import ScrollableContainer, Horizontal, Vertical
 from textual import work
 
 from gaia.core.agent import Gaia
-from gaia.core.memory import ChromaMemoryStore, SQLiteMemoryStore
+from gaia.core.memory import SQLiteMemoryStore
 from gaia.config import (
     DEFAULT_SETTINGS,
     load_config,
@@ -31,13 +32,15 @@ from datetime import datetime
 
 logger = logging.getLogger("gaia.tui")
 
-SETTINGS_FILE = Path("settings.json")
+# Resolve settings path: GAIA_HOME env var (set by Docker) overrides cwd
+_GAIA_HOME = Path(os.environ.get("GAIA_HOME", Path.home() / ".gaia"))
+SETTINGS_FILE = _GAIA_HOME / "settings.json"
 
 
 def _setup_logging() -> None:
     """Configure file-based logging with a session timestamped log file."""
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = Path("logs")
+    log_dir = _GAIA_HOME / "logs"
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / f"gaia-{ts}.log"
 
@@ -254,7 +257,7 @@ class GaiaTUIApp(App):
         )
         self.is_shutting_down = False
 
-    def _init_memory(self) -> "SQLiteMemoryStore | ChromaMemoryStore | None":
+    def _init_memory(self) -> "SQLiteMemoryStore | None":
         """Create a MemoryStore based on the configured backend.
 
         Reads ``memory.backend`` from settings (``"sqlite"`` or ``"chroma"``).
@@ -263,12 +266,23 @@ class GaiaTUIApp(App):
         event loop exists in ``__init__``.
         """
         backend = self.settings.get("memory", {}).get("backend", "sqlite")
+        memory_cfg = self.settings.get("memory", {})
         try:
             match backend:
                 case "chroma":
-                    store = ChromaMemoryStore()
+                    # ChromaDB is an optional dependency — import lazily
+                    from gaia.core.memory.chroma_store import ChromaMemoryStore
+
+                    endpoint = memory_cfg.get("endpoint")
+                    store = ChromaMemoryStore(endpoint=endpoint)
                 case "sqlite":
-                    db_path = self.settings.get("memory_db", "gaia-memory.db")
+                    raw_db = self.settings.get("memory_db", "gaia-memory.db")
+                    # Resolve relative paths against GAIA_HOME (set by Docker)
+                    db_path = (
+                        Path(raw_db)
+                        if raw_db.startswith(("/", "~"))
+                        else _GAIA_HOME / raw_db
+                    )
                     encrypted = self.settings.get("encrypted", False)
                     store = SQLiteMemoryStore(db_path, encrypted=encrypted)
                 case _:

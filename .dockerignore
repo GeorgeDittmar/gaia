@@ -1,0 +1,56 @@
+# Version control
+.git
+.gitignore
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.ds_store
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+.eggs/
+python_modules/
+
+# Cache
+__pycache__/
+*.pyc
+.hypothesis/
+.pytest_cache/
+
+# Lock files (copied explicitly)
+# uv.lock  # needed for build
+# pipfile.lock
+
+# Docker files
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Docs (not needed inside container)
+docs/
+
+# Tests (not needed at runtime)
+tests/
+
+# README is needed for hatchling build (referenced in pyproject.toml)
+# README.md  # uncommented for build
+
+# User data
+*.log
+logs/
+settings.json
+gaia-memory.db
+
+# Misc
+Makefile
+CLAUDE.md
+docs/*.md
+issues.md
+FIX_PROPOSAL.md
+PLANNING/

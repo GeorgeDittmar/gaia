@@ -8,11 +8,12 @@ SETTINGS_FILE = Path("settings.json")
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
-    "endpoint": "http://localhost:11434",
+    "endpoint": "http://localhost:11434",  # Ollama default; override with LLM_ENDPOINT or /settings
     "encrypted": True,
     "memory_db": "gaia-memory.db",
     "memory": {
         "backend": "sqlite",  # "sqlite" or "chroma"
+        "endpoint": None,     # ChromaDB HTTP endpoint — auto-detected from CHROMA_HOST env
     },
     "system_prompt": (
         "You are G.A.I.A., an advanced, secure local AI agent. "

@@ -5,13 +5,11 @@ description = "G.A.I.A. — a private, local, zero-telemetry personal AI assista
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "chromadb>=1.5.9",
     "pydantic>=2.13.5",
     "pydantic-ai>=2.40.0",
     "pydantic-ai-harness>=0.29.0",
     "ruff>=0.16.9",
     "scikit-learn>=1.9.1",
-    "sentence-transformers>=6.2.0",
     "textual>=8.2.8",
 ]
 
@@ -23,6 +21,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+memory = [
+    "chromadb>=1.5.9",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -31,6 +32,18 @@ testpaths = ["tests"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["src/gaia"]
+
+[tool.hatch.build.targets.sdist]
+# Keep src/ structure intact so pip can build from sdist
+include = [
+    "/src",
+    "/pyproject.toml",
+    "/README.md",
+    "/LICENSE",
+]
 
 [dependency-groups]
 dev = [
