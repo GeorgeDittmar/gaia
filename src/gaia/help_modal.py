@@ -1,9 +1,9 @@
 """Help / reference overlay for the G.A.I.A. TUI."""
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Static, Button, Label
-from textual.containers import Vertical, Horizontal
+from textual.widgets import Button, Static
 
 from gaia.config import SLASH_COMMANDS
 

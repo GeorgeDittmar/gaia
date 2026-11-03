@@ -15,7 +15,6 @@ import pytest
 
 from gaia.core.memory.chroma_store import ChromaMemoryStore
 
-
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
@@ -318,3 +317,31 @@ class TestEndpointResolution:
     async def test_default_host(self) -> None:
         store = ChromaMemoryStore()
         assert store._endpoint == "http://host.containers.internal:8000"
+
+
+# ── Generic delete_memory ──────────────────────────────────────────
+
+
+class TestDeleteMemory:
+    """Tests for the generic delete_memory method on ChromaMemoryStore."""
+
+    async def test_delete_semantic(self, store, chroma_mock) -> None:
+        collections = chroma_mock[1]
+        await store.semantic_insert(
+            "will be deleted via generic method",
+            "test",
+            1.0,
+            "test",
+        )
+        await store.delete_memory("semantic", "test-fact-id")
+        collections["gaia_semantic"].delete.assert_called()
+
+    async def test_delete_unknown_type_ignores(self, store, chroma_mock) -> None:
+        """Unknown target_type should not raise."""
+        await store.delete_memory("nonexistent", "any-id")  # should not raise
+
+    async def test_delete_nonexistent_semantic(self, store, chroma_mock) -> None:
+        """Deleting a non-existent semantic entry should not raise."""
+        await store.delete_memory(
+            "semantic", "00000000-0000-0000-0000-000000000000"
+        )

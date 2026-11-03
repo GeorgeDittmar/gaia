@@ -222,3 +222,5 @@ __marimo__/
 gaia-memory.db
 settings.json
 logs/
+# Generated database files
+*.db

@@ -20,7 +20,7 @@ class AgentGuard:
 
     def __init__(
         self,
-        embedding_model=None,
+        conf_path="~.gaia/"
     ):
         pass
 

@@ -1,37 +1,10 @@
 """Tests for the Gaia core agent (src/gaia/core/agent/base.py)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import AsyncIterator
 
 import pytest
 
-
-def _make_mock_run_result(
-    tokens: list[str],
-) -> MagicMock:
-    """Build a StreamedRunResult mock that streams *tokens*.
-
-    The real pydantic-ai result has:
-        async with agent.run_stream(prompt) as result:
-            async for chunk in result.stream_text(delta=True):
-                yield chunk
-
-    So ``run_stream`` must be an async context manager, and
-    ``result.stream_text(delta=True)`` must return an async iterator.
-    """
-
-    async def _stream_text(delta: bool = False) -> AsyncIterator[str]:
-        for token in tokens:
-            yield token
-
-    mock_result = MagicMock()
-    mock_result.stream_text = MagicMock(return_value=_stream_text(delta=True))
-
-    mock_cm = AsyncMock()
-    mock_cm.__aenter__.return_value = mock_result
-    mock_cm.__aexit__.return_value = None
-
-    return mock_cm
+from conftest import _make_mock_run_result
 
 
 @pytest.fixture()

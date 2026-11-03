@@ -506,3 +506,77 @@ class SQLiteMemoryStore(MemoryStore):
              json.dumps(detail) if detail else None),
         )
         conn.commit()
+
+    # ── Similarity search ────────────────────────────────────────
+
+    async def semantic_similarity_search(
+        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+    ) -> bool:
+        """Check if any fact is similar to *query*.
+
+        Uses keyword overlap scoring. Returns ``True`` if any fact
+        shares enough keywords with the query.
+        """
+        conn = self._conn  # type: ignore [union-attr]
+        keywords = [t.lower().rstrip("?") for t in query.split()]
+        keywords = [t for t in keywords if t]
+        if not keywords:
+            return False
+
+        facts = conn.execute(
+            "SELECT content FROM semantic_facts LIMIT 500"
+        ).fetchall()
+        for row in facts:
+            text = row["content"].lower()
+            score = sum(1 for kw in keywords if kw in text)
+            if score >= max(1, len(keywords) * distance_threshold):
+                return True
+        return False
+
+    # ── Generic delete ───────────────────────────────────────────
+
+    async def delete_memory(self, target_type: str, target_id: str) -> None:
+        """Delete a memory entry by type and ID."""
+        conn = self._conn  # type: ignore [union-attr]
+        match target_type:
+            case "semantic":
+                conn.execute("DELETE FROM semantic_facts WHERE fact_id = ?", (target_id,))
+                # Clean up FTS5 index
+                row = conn.execute(
+                    "SELECT id FROM semantic_facts WHERE fact_id = ?", (target_id,)
+                ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "DELETE FROM semantic_facts_fts WHERE rowid = ?", (row["id"],)
+                    )
+                conn.commit()
+            case "episodic":
+                conn.execute(
+                    "DELETE FROM episodic_events WHERE event_id = ?", (target_id,)
+                )
+                # Clean up FTS5 index
+                row = conn.execute(
+                    "SELECT id FROM episodic_events WHERE event_id = ?", (target_id,)
+                ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "DELETE FROM episodic_events_fts WHERE rowid = ?", (row["id"],)
+                    )
+                conn.commit()
+            case "procedure":
+                conn.execute(
+                    "DELETE FROM procedure_entries WHERE procedure_id = ?", (target_id,)
+                )
+                row = conn.execute(
+                    "SELECT id FROM procedure_entries WHERE procedure_id = ?", (target_id,)
+                ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "DELETE FROM procedure_entries_fts WHERE rowid = ?", (row["id"],)
+                    )
+                conn.commit()
+            case "audit":
+                # Audit log is append-only by design — nothing to delete
+                pass
+            case _:
+                pass  # Unknown type — silently ignore
