@@ -133,7 +133,7 @@ class TestSemanticMemory:
     ) -> None:
         collections = chroma_mock[1]
         await store.semantic_delete("fact-123")
-        collections["gaia_semantic"].delete.assert_called_with(where={"fact_id": "fact-123"})
+        collections["gaia_semantic"].delete.assert_called_with(ids=["fact-123"])
 
     async def test_search_respects_limit(
         self, store: ChromaMemoryStore, chroma_mock,

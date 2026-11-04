@@ -196,7 +196,7 @@ class ChromaMemoryStore(MemoryStore):
 
         # Delete old document by fact_id
         await self._thread(
-            lambda: collection.delete(where={"fact_id": fact_id})
+            lambda: collection.delete(ids=[fact_id])
         )
 
         metadata = _sanitize_meta({
@@ -222,7 +222,7 @@ class ChromaMemoryStore(MemoryStore):
         """Remove a fact by ID."""
         collection = self._col("semantic")
         await self._thread(
-            lambda: collection.delete(where={"fact_id": fact_id})
+            lambda: collection.delete(ids=[fact_id])
         )
 
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
@@ -279,7 +279,7 @@ class ChromaMemoryStore(MemoryStore):
         distance where 0 = identical, 2 = opposite.  If any returned
         distance is <= threshold, the fact is a near-duplicate.
         """
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
         result = await self._thread(
             lambda: collection.query(
                 query_texts=[query],
@@ -649,7 +649,5 @@ class ChromaMemoryStore(MemoryStore):
         collection_name = f"{self._collection_prefix}_{collection_suffix}"
         collection = self._collections[collection_name]
         await self._thread(
-            lambda: collection.delete(where={"fact_id": target_id})
-            if collection_suffix == "semantic"
-            else collection.delete(ids=[target_id])
+            lambda: collection.delete(ids=[target_id])
         )
