@@ -133,6 +133,9 @@ class TestBackgroundTimer:
             app._memory = mock_store
             app.set_interval = MagicMock()
             app.ping_loop = MagicMock()
+            # _periodic_extraction_loop is an @work method that requires an
+            # event loop — mock it so on_mount doesn't crash in this test.
+            app._periodic_extraction_loop = MagicMock()
 
             # Simulate on_mount
             app.on_mount()

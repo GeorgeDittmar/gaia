@@ -375,10 +375,10 @@ class GaiaTUIApp(App):
     _SUMMARIZE_MIN_AGE_MINUTES = 30
 
     def _schedule_startup_extraction(self) -> None:
-        """Extract facts from any episodic memory that hasn't been processed yet."""
+        """Launch the background extraction loop on app startup."""
         if self._memory is None:
             return
-        self.call_after_refresh(self._run_periodic_extraction)
+        self._periodic_extraction_loop()
 
     @work(exclusive=False, thread=False)
     async def _run_periodic_extraction(self) -> None:
@@ -393,6 +393,25 @@ class GaiaTUIApp(App):
                 logger.info("periodic extraction saved %d facts", count)
         except Exception:
             logger.exception("periodic extraction failed")
+
+    @work(exclusive=False, thread=False)
+    async def _periodic_extraction_loop(self) -> None:
+        """Background loop that periodically extracts facts from episodic memory.
+
+        Runs every 5 minutes. Uses ``call_after_refresh`` so the extraction
+        runs as a background task on the event loop without blocking the
+        interval timer.
+        """
+        while not self.is_shutting_down:
+            for _ in range(300):
+                if self.is_shutting_down:
+                    return
+                await asyncio.sleep(1)
+
+            if self.is_shutting_down:
+                return
+
+            self.call_after_refresh(self._run_periodic_extraction)
 
     @work(exclusive=False, thread=False)
     async def _run_background_summary_check(self) -> None:
@@ -671,4 +690,4 @@ class GaiaTUIApp(App):
             logger.info(
                 "turn %d — triggering periodic fact extraction", self._turn_count
             )
-            asyncio.get_event_loop().call_later(5, self._run_periodic_extraction)
+            self.call_after_refresh(self._run_periodic_extraction)

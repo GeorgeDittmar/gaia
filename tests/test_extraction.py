@@ -145,10 +145,11 @@ def app_with_core() -> tuple:
         app._memory = MagicMock()
 
         # Route the periodic worker through the (mocked) core agent.
-        async def _fake_periodic_extraction() -> int:
-            return await core.extract_from_history(max_turns=10)
-
-        app._run_periodic_extraction = _fake_periodic_extraction
+        # Must be a *callable* — ``call_after_refresh`` passes it as a
+        # callback (no ``()``) so it can invoke it later.
+        app._run_periodic_extraction = lambda: core.extract_from_history(
+            max_turns=10
+        )
         yield app, core
 
 
@@ -157,20 +158,22 @@ def _drive_run_agent_execution(app: "GaiaTUIApp", prompt: str) -> None:
     scheduled periodic callback run to completion.
 
     ``run_agent_execution`` is a Textual ``@work`` task and schedules the
-    periodic extractor via ``asyncio.get_event_loop().call_later(5, ...)``;
-    we patch ``get_event_loop`` so ``call_later`` schedules a real task.
+    periodic extractor via ``call_after_refresh``; we patch that method to
+    capture callbacks and run them synchronously inside the event loop.
     """
+    _captured: list = []
 
-    def _fake_call_later(delay: float, cb) -> asyncio.Task:
-        return asyncio.ensure_future(cb())
+    def _capture_call_after_refresh(cb) -> None:
+        _captured.append(cb)
 
     async def _run_one() -> None:
-        with patch("asyncio.get_event_loop") as mock_loop:
-            mock_loop.return_value.call_later = _fake_call_later
+        with patch.object(app, "call_after_refresh", _capture_call_after_refresh):
             # @work-wrapped; call the underlying coroutine directly.
             await app.run_agent_execution.__wrapped__(app, prompt)
-            # Let the scheduled periodic callback finish.
-            await asyncio.sleep(0)
+            # Run any captured callbacks (scheduled by call_after_refresh).
+            for cb in _captured:
+                task = asyncio.create_task(cb())
+                await task
 
     asyncio.run(_run_one())
 
