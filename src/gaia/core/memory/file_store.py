@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -153,7 +152,6 @@ class FileMemoryStore(MemoryStore):
         self._memory_dir = Path(memory_dir)
         self._initialized = False
         self._index: dict[str, tuple[str, dict[str, str]]] = {}  # key -> (path_str, meta)
-        self._index_path = self._memory_dir.parent / ".gaia_memory_index.json"
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -194,41 +192,42 @@ class FileMemoryStore(MemoryStore):
         tmp.rename(path)
 
     def _build_index(self) -> None:
-        """Scan all .md files and build the in-memory metadata index."""
+        """Scan all .md files and build the in-memory metadata index.
+
+        Indexes every entry type (semantic, episodic, procedure, audit)
+        using its own ID field.  Index keys have the form ``<subdir>/<id>``.
+        """
+        self._index: dict[str, tuple[str, dict[str, str]]] = {}
         for subdir in self._SUBDIRS:
             files = self._list_md(subdir)
             for path in files:
                 try:
                     meta, _body = self._read_file(path)
-                    # Build index key: subdirectory/event_id
-                    key = f"{subdir}/{meta.get('event_id', '')}"
-                    if key.endswith("/"):
-                        continue  # skip entries without an event_id
-                    self._index[key] = (str(path), {
-                        "event_id": meta.get("event_id", ""),
-                        "event_type": meta.get("event_type", ""),
-                        "conversation_id": meta.get("conversation_id", ""),
-                        "timestamp": meta.get("timestamp", ""),
-                    })
                 except Exception:
                     continue
 
-    def _persist_index(self) -> None:
-        """Write the in-memory index to disk atomically."""
-        if not self._index_path:
-            return
-        try:
-            serializable = {
-                key: (path, meta)
-                for key, (path, meta) in self._index.items()
-            }
-            self._index_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._index_path.with_suffix(".json.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(serializable, f)
-            os.replace(tmp, self._index_path)
-        except Exception:
-            logger.debug("failed to persist index sidecar")
+                # Pick the ID field specific to this entry type
+                match subdir:
+                    case "episodic":
+                        entry_id = meta.get("event_id", "")
+                    case "semantic":
+                        entry_id = meta.get("fact_id", "")
+                    case "procedures":
+                        entry_id = meta.get("procedure_id", "")
+                    case "audit":
+                        entry_id = meta.get("entry_id", "")
+                    case _:
+                        continue
+
+                if not entry_id:
+                    continue
+
+                key = f"{subdir}/{entry_id}"
+                self._index[key] = (str(path), {
+                    **meta,
+                    "_type": subdir,
+                })
+
 
     async def _rebuild_index(self) -> None:
         """Rebuild the in-memory index from disk (runs in a thread)."""
@@ -298,6 +297,7 @@ class FileMemoryStore(MemoryStore):
         }
         path = self._memory_dir / "semantic" / f"{fact_id}.md"
         await asyncio.to_thread(self._write_file, path, meta, content)
+        await self._rebuild_index()
         return fact_id
 
     async def semantic_update(
@@ -327,8 +327,33 @@ class FileMemoryStore(MemoryStore):
         self._index.pop(f"semantic/{fact_id}", None)
 
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
-        """Keyword-token search on semantic facts, ranked by relevance."""
-        results = self._scoring_search("semantic", query, limit)
+        """Keyword-token search on semantic facts, ranked by relevance.
+
+        Uses the in-memory index to pre-filter candidates instead of
+        scanning every file on disk.
+        """
+        # Pre-filter from index, then score
+        candidates: list[tuple[str, dict[str, str]]] = [
+            (path_str, meta)
+            for key, (path_str, meta) in self._index.items()
+            if key.startswith("semantic/")
+        ]
+
+        if candidates:
+            scored: list[tuple[int, float, dict[str, Any], str]] = []
+            for path_str, meta in candidates:
+                try:
+                    _, body = self._read_file(Path(path_str))
+                except Exception:
+                    continue
+                score = _score_query(query, body)
+                if score > 0:
+                    created = meta.get("created_at", "") or meta.get("timestamp", "")
+                    scored.append((score, self._parse_ts(created), meta, body))
+            scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            results = scored[:limit]
+        else:
+            results = []
         records: list[dict] = []
         for _score, _ts, meta, body in results:
             records.append({
@@ -525,8 +550,8 @@ class FileMemoryStore(MemoryStore):
             except Exception:
                 continue
 
-        # Persist updated index
-        self._persist_index()
+        # Index entries already removed above; rebuild to sync disk state
+        await self._rebuild_index()
         return count
 
     # ── Procedural operations ────────────────────────────────────
@@ -561,6 +586,7 @@ class FileMemoryStore(MemoryStore):
         body = description
         path = self._memory_dir / "procedures" / f"{procedure_id}.md"
         await asyncio.to_thread(self._write_file, path, meta, body)
+        await self._rebuild_index()
 
     async def procedure_get(self, procedure_id: str) -> dict | None:
         """Retrieve a procedure by ID, or ``None`` if not found."""
@@ -577,24 +603,34 @@ class FileMemoryStore(MemoryStore):
     async def procedure_search(
         self, query: str, category: str | None = None
     ) -> list[dict]:
-        """Keyword-token search on procedure name + description."""
-        files = self._list_md("procedures")
+        """Keyword-token search on procedure name + description.
+
+        Uses the in-memory index to pre-filter candidates instead of
+        scanning every file on disk.
+        """
+        # Pre-filter from index, then score
+        candidates: list[tuple[str, dict[str, str]]] = [
+            (path_str, meta)
+            for key, (path_str, meta) in self._index.items()
+            if key.startswith("procedures/")
+        ]
+
         scored: list[tuple[int, float, dict[str, Any], str]] = []
-
-        for path in files:
-            try:
-                meta, body = self._read_file(path)
-            except Exception:
-                continue
-
+        for path_str, meta in candidates:
             if category is not None:
                 if meta.get("category") != category:
                     continue
+            try:
+                _, body = self._read_file(Path(path_str))
+            except Exception:
+                continue
 
             searchable = f"{meta.get('name', '')} {body}"
             score = _score_query(query, searchable)
             if score > 0:
-                scored.append((score, self._parse_ts(meta.get("created_at", "")), meta, body))
+                scored.append(
+                    (score, self._parse_ts(meta.get("created_at", "")), meta, body)
+                )
 
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         results = scored[:100]
@@ -639,6 +675,7 @@ class FileMemoryStore(MemoryStore):
         }
         path = self._memory_dir / "audit" / f"{entry_id}.md"
         await asyncio.to_thread(self._write_file, path, meta, action)
+        await self._rebuild_index()
 
     # ── Generic deletion ─────────────────────────────────────────
 
