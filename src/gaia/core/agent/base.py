@@ -44,34 +44,7 @@ logger = logging.getLogger("gaia.extract")
 _USER_SUMMARY_PATH = Path.home() / ".gaia" / "user_summary.md"
 
 
-def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Split markdown text into frontmatter dict and body.
-
-    Returns (metadata_dict, body_string). If no frontmatter found,
-    returns ({}, full_text).
-    """
-    body = text
-    metadata: dict[str, str] = {}
-
-    if text.startswith("---"):
-        end_marker = text.find("---", 3)
-        if end_marker != -1:
-            fm_lines = text[3:end_marker].strip().splitlines()
-            for line in fm_lines:
-                if ":" in line:
-                    key, _, value = line.partition(":")
-                    metadata[key.strip()] = value.strip().strip('"')
-            body = text[end_marker + 3:].lstrip("\n")
-
-    return metadata, body
-
-
-def _build_frontmatter(metadata: dict[str, str]) -> str:
-    """Build a YAML frontmatter block surrounded by --- markers."""
-    lines = []
-    for key, value in metadata.items():
-        lines.append(f"{key}: {value}")
-    return "---\n" + "\n".join(lines) + "\n---"
+from gaia.core.memory.file_store import _build_frontmatter, _parse_frontmatter
 
 
 def _generate_conversation_id() -> str:

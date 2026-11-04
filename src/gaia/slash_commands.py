@@ -11,7 +11,7 @@ from textual.containers import ScrollableContainer
 from textual.widgets import Static
 
 from gaia.config import SETTINGS_FILE, Settings
-from gaia.core.agent.base import _parse_frontmatter
+from gaia.core.memory.file_store import _parse_frontmatter
 from gaia.settings_modal import SettingsModal
 
 if TYPE_CHECKING:
