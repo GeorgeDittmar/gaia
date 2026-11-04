@@ -483,7 +483,7 @@ class Gaia:
         input_text = "\n".join(input_parts)
 
         # Pass existing summary for incremental update
-        if hasattr(self, "_Gaia__user_summary") and self._Gaia__user_summary:
+        if self.__user_summary:
             input_text += (
                 "\n\nEXISTING SUMMARY (update, don't start from scratch):\n"
                 + self.__user_summary
