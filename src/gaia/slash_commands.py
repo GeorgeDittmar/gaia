@@ -314,6 +314,8 @@ class SlashCommandHandler:
             case "extract-debug":
                 # Debug mode: do one extraction on the latest turn and show
                 # raw output
+                # Clean up any leftover status widget from previous runs
+                _remove_by_id(chat_box, "extract-debug-status")
                 if (
                     self._app._memory is not None
                     and self._app.core_agent is not None
