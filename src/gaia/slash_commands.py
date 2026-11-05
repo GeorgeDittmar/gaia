@@ -314,7 +314,6 @@ class SlashCommandHandler:
             case "extract-debug":
                 # Debug mode: do one extraction on the latest turn and show
                 # raw output
-                # Clean up any leftover status widget from previous runs
                 _remove_by_id(chat_box, "extract-debug-status")
                 if (
                     self._app._memory is not None
@@ -329,58 +328,70 @@ class SlashCommandHandler:
                     )
                     chat_box.scroll_end()
 
-                    # Get the latest turn from episodic memory
-                    results = await self._app._memory.episodic_search(
-                        query="conversation turn", limit=1
-                    )
-                    if results:
-                        latest = results[0]
-                        raw_payload = latest.get("payload", "{}")
-                        if isinstance(raw_payload, str):
-                            try:
-                                payload = json.loads(raw_payload)
-                            except (json.JSONDecodeError, ValueError):
-                                payload = {}
+                    try:
+                        # Get the latest turn from episodic memory
+                        results = await self._app._memory.episodic_search(
+                            query="conversation turn", limit=1
+                        )
+                        if results:
+                            latest = results[0]
+                            raw_payload = latest.get("payload", "{}")
+                            if isinstance(raw_payload, str):
+                                try:
+                                    payload = json.loads(raw_payload)
+                                except (json.JSONDecodeError, ValueError):
+                                    payload = {}
+                            else:
+                                payload = raw_payload
+                            user_msg = payload.get("user_prompt", "(none)")
+                            agent_resp = payload.get("agent_response", "(none)")
+                            status_text = (
+                                f"[dim #8b949e]=== DEBUG EXTRACTION ==="
+                                f"[/dim #8b949e]\n"
+                                f"[dim]User: {user_msg[:200]}[/dim]\n"
+                                f"[dim]Agent: "
+                                f"{agent_resp[:200]}[/dim]"
+                            )
+                            # Update widget in-place (no unmount/remount)
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
+                            )
+                            widget.update(status_text)
+                            # Now actually run extraction
+                            count = (
+                                await self._app.core_agent.post_turn_extract(
+                                    user_msg, agent_resp
+                                )
+                            )
+                            # Replace with result
+                            widget.remove()
+                            await chat_box.mount(
+                                ChatTurn(
+                                    f"[bold #00f0ff]Extracted & saved: "
+                                    f"{count} fact(s)[/bold #00f0ff]",
+                                    classes="agent-msg",
+                                )
+                            )
                         else:
-                            payload = raw_payload
-                        user_msg = payload.get("user_prompt", "(none)")
-                        agent_resp = payload.get("agent_response", "(none)")
-                        status_text = (
-                            f"[dim #8b949e]=== DEBUG EXTRACTION ==="
-                            f"[/dim #8b949e]\n"
-                            f"[dim]User: {user_msg[:200]}[/dim]\n"
-                            f"[dim]Agent: "
-                            f"{agent_resp[:200]}[/dim]"
-                        )
-                        _remove_by_id(chat_box, "extract-debug-status")
-                        await chat_box.mount(
-                            ChatTurn(
-                                status_text,
-                                classes="agent-msg",
-                                id="extract-debug-status",
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
                             )
-                        )
-                        # Now actually run extraction
-                        count = (
-                            await self._app.core_agent.post_turn_extract(
-                                user_msg, agent_resp
+                            widget.update(
+                                "[bold #ff007f]No conversation turns "
+                                "found in episodic memory.[/bold #ff007f]"
                             )
-                        )
-                        # Show result
-                        await chat_box.mount(
-                            ChatTurn(
-                                f"[bold #00f0ff]Extracted & saved: {count} fact(s)[/bold #00f0ff]",
-                                classes="agent-msg",
+                    except Exception:
+                        logger.exception("extract-debug failed")
+                        try:
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
                             )
-                        )
-                    else:
-                        _remove_by_id(chat_box, "extract-debug-status")
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]No conversation turns found in episodic memory.[/bold #ff007f]",
-                                classes="agent-msg",
+                            widget.update(
+                                "[bold #ff007f]Extract failed — "
+                                "check logs.[/bold #ff007f]"
                             )
-                        )
+                        except Exception:
+                            pass
                     chat_box.scroll_end()
                 else:
                     await chat_box.mount(
