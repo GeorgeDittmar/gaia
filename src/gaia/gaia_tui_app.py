@@ -652,12 +652,12 @@ class GaiaTUIApp(App):
     async def _warmup_llm(self) -> None:
         """Warm up the LLM to prefill the KV cache with the system prompt.
 
-        Sends a short empty message through the agent. This triggers one
-        forward pass over the full system prompt, building the KV cache so
-        the first real user message is ~20-50% faster.
+        Sends a "hello" message to the agent during startup, so the first
+        real user message benefits from a pre-warmed KV cache. The agent's
+        greeting appears as the first message in the chat window.
 
         Runs in background during startup — non-blocking, fails silently.
-        Shows a pulsing "WARMING..." indicator and a chat message.
+        Shows a pulsing "WARMING..." indicator so the user knows it's working.
         """
         if self._memory is None or self.core_agent is None:
             logger.info("skipping LLM warmup — memory or agent not ready")
@@ -673,34 +673,48 @@ class GaiaTUIApp(App):
         from textual.containers import ScrollableContainer
         chat_box = self.query_one("#chat-container", ScrollableContainer)
 
-        await chat_box.mount(
-            Static(
-                "[dim #8b949e]⏳ Warming up LLM — prefilling KV cache...[/dim #8b949e]",
-                id="warmup-status",
-            )
+        # Mount a greeting widget — the agent's response will be streamed here
+        greeting_widget = ChatTurn(
+            "[bold #00f0ff]G.A.I.A.[/bold #00f0ff] ",
+            classes="agent-msg",
         )
+        await chat_box.mount(greeting_widget)
+        chat_box.scroll_end()
 
         try:
-            # Fire a short empty message — just enough to trigger a forward
-            # pass over the system prompt and build the KV cache.
-            async for _ in self.core_agent.ainteract(prompt="(warmup)"):
-                break  # We only need one forward pass, not a full response
-            logger.info("LLM warmup complete — KV cache prefill done")
+            # Send a "hello" to get the agent to respond — this warms up the
+            # KV cache so subsequent messages are faster.
+            response = ""
+            dots_states = [".  ", ".. ", "..."]
+            dot_index = 0
+            first_token = True
+
+            async for token in self.core_agent.ainteract(prompt="hello"):
+                if first_token:
+                    # Cancel the waiting animation and show the greeting
+                    self.connection_status = "ONLINE"
+                    self._warming_timer.stop()
+                    first_token = False
+                    base_prefix = (
+                        f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):"
+                        f"[/bold #00f0ff] "
+                    )
+                    greeting_widget.update(base_prefix)
+                    response = ""
+
+                response += token
+                greeting_widget.update(base_prefix + response)
+                chat_box.scroll_end()
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
-
-        self._warming_timer.stop()
-        self.connection_status = "ONLINE"
-
-        try:
-            widget = chat_box.query_one("#warmup-status", Static)
-            widget.update(
-                "[dim #8b949e]✓ KV cache prefill complete[/dim #8b949e]"
+            greeting_widget.update(
+                f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
+                f"[dim #8b949e]Connection established. Ready.[/dim #8b949e]"
             )
-            await asyncio.sleep(2)
-            widget.remove()
-        except Exception:
-            pass
+            self.connection_status = "ONLINE"
+            self._warming_timer.stop()
+
+        logger.info("LLM warmup complete — KV cache prefill done")
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
