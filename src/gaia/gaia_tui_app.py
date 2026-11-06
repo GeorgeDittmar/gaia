@@ -158,6 +158,15 @@ class GaiaTUIApp(App):
         visibility: hidden;
     }
 
+    .startup-banner {
+        height: 1;
+        background: #161b22;
+        color: #8b949e;
+        content-align: center middle;
+        dock: top;
+        visibility: hidden;
+    }
+
     .status-online {
         background: #238636;
         color: #ffffff;
@@ -518,6 +527,11 @@ class GaiaTUIApp(App):
 
         with ScrollableContainer(id="chat-container"):
             yield Static(
+                "",
+                id="startup-status",
+                classes="startup-banner",
+            )
+            yield Static(
                 "[bold #ff007f]G.A.I.A. SYSTEM INITIALIZED[/bold #ff007f]\n"
                 "[dim #8b949e]Encryption layers validated | Zero-Telemetry Mode[/dim #8b949e]\n"
                 "[dim #8b949e]Type [bold #ff007f]/[/bold #ff007f] for commands "
@@ -656,9 +670,8 @@ class GaiaTUIApp(App):
         real user message benefits from a pre-warmed KV cache. The agent's
         greeting streams into the chat window as the first message.
 
-        Runs in background during startup — non-blocking, fails silently.
-        Shows a pulsing "WARMING..." status bar indicator and a dots
-        animation in the chat while waiting for the first token.
+        A startup banner at the top shows the warming status and fades
+        away once the LLM responds. Status bar cycles WARMING... → ONLINE.
         """
         if self._memory is None or self.core_agent is None:
             logger.info("skipping LLM warmup — memory or agent not ready")
@@ -670,74 +683,41 @@ class GaiaTUIApp(App):
             0.3, self._animate_warming
         )
 
-        from textual.widgets import Static
         from textual.containers import ScrollableContainer
         chat_box = self.query_one("#chat-container", ScrollableContainer)
-
-        # Mount a greeting widget — the agent's response will be streamed here
-        greeting_widget = ChatTurn(
-            "[bold #00f0ff]G.A.I.A. ([dim #8b949e]connecting...[/dim #8b949e]):[/bold #00f0ff] ",
-            classes="agent-msg",
+        banner = chat_box.query_one("#startup-status", Static)
+        banner.set_class("startup-banner", True)
+        banner.update(
+            "[dim #8b949e]⏳ Warming up LLM — prefilling KV cache...[/dim #8b949e]"
         )
-        await chat_box.mount(greeting_widget)
-        chat_box.scroll_end()
-
-        base_prefix = (
-            f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
-        )
-        dots_states = [".  ", ".. ", "..."]
-        dot_index = 0
-        first_token_received = False
-        anim_task: asyncio.Task | None = None
-
-        async def animate_waiting() -> None:
-            nonlocal dot_index
-            while not first_token_received and not self.is_shutting_down:
-                greeting_widget.update(
-                    base_prefix + f"[dim #8b949e]{dots_states[dot_index % len(dots_states)]}[/dim #8b949e]"
-                )
-                dot_index += 1
-                await asyncio.sleep(0.2)
-
-        anim_task = asyncio.create_task(animate_waiting())
+        banner.set_visible(True)
 
         try:
-            response_accumulator = ""
+            # Fire a "hello" — triggers forward pass over system prompt,
+            # building the KV cache. We don't display the response in the
+            # banner; the greeting will stream normally below.
+            response = ""
             async for token in self.core_agent.ainteract(prompt="hello"):
                 if self.is_shutting_down:
                     break
-
-                if not first_token_received:
-                    first_token_received = True
-                    anim_task.cancel()
-                    try:
-                        await anim_task
-                    except asyncio.CancelledError:
-                        pass
-                    response_accumulator = ""
-                    # Transition status as soon as the agent starts talking
-                    self.connection_status = "ONLINE"
-                    self._warming_timer.stop()
-
-                response_accumulator += token
-                greeting_widget.update(base_prefix + response_accumulator)
-                chat_box.scroll_end()
+                response += token
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
-            if anim_task and not anim_task.done():
-                anim_task.cancel()
-                try:
-                    await anim_task
-                except asyncio.CancelledError:
-                    pass
-            greeting_widget.update(
-                f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
-                f"[dim #8b949e]Connection established. Ready.[/dim #8b949e]"
+            banner.update(
+                "[dim #8b949e]⚠ Warming skipped — connection ready.[/dim #8b949e]"
             )
             self.connection_status = "ONLINE"
             self._warming_timer.stop()
+            return
 
         logger.info("LLM warmup complete — KV cache prefill done")
+        banner.update(
+            "[dim #8b949e]✓ KV cache prefill complete.[/dim #8b949e]"
+        )
+        self.connection_status = "ONLINE"
+        self._warming_timer.stop()
+        # Fade out banner after a brief pause
+        self.call_after_refresh(lambda: banner.set_visible(False))
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
