@@ -615,7 +615,9 @@ class GaiaTUIApp(App):
             if self.is_shutting_down:
                 break
 
-            if status != self.connection_status:
+            # Don't overwrite WARMING during KV cache prefill — let the
+            # warmup animation finish before the indicator goes ONLINE.
+            if status != self.connection_status and self.connection_status != "WARMING...":
                 self.connection_status = status
 
             for _ in range(30):
@@ -662,7 +664,10 @@ class GaiaTUIApp(App):
             return
 
         logger.info("warming up LLM (prefill KV cache)...")
-        self.call_after_refresh(lambda: self.__start_warming())
+        self.connection_status = "WARMING..."
+        self._warming_timer = self.set_interval(
+            0.3, self._animate_warming
+        )
         try:
             # Fire a short empty message — just enough to trigger a forward
             # pass over the system prompt and build the KV cache.
@@ -671,25 +676,7 @@ class GaiaTUIApp(App):
             logger.info("LLM warmup complete — KV cache prefill done")
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
-        self.call_after_refresh(lambda: self.__stop_warming())
-
-    def __start_warming(self) -> None:
-        """Start the pulsing WARMING indicator."""
-        try:
-            self.connection_status = "WARMING..."
-            self._warming_timer = self.set_interval(
-                0.3, self._animate_warming
-            )
-        except Exception:
-            pass
-
-    def __stop_warming(self) -> None:
-        """Stop the pulsing WARMING indicator and show ONLINE."""
-        try:
-            if hasattr(self, "_warming_timer"):
-                self._warming_timer.stop()
-        except Exception:
-            pass
+        self._warming_timer.stop()
         self.connection_status = "ONLINE"
 
     def action_show_help(self) -> None:
