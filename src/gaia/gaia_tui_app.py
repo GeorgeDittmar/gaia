@@ -541,6 +541,7 @@ class GaiaTUIApp(App):
         self._refresh_config_info()
         self.watch_connection_status(self.connection_status)
         self.ping_loop()
+        self._warmup_llm()
         self._mount_autocomplete_popup()
         if self._memory is not None:
             try:
@@ -615,6 +616,30 @@ class GaiaTUIApp(App):
     async def _check_connection(self, endpoint: str) -> str:
         """Ping *endpoint* and return 'ONLINE' / 'UNREACHABLE' / 'HTTP <code>'."""
         return await check_endpoint(endpoint)
+
+    @work(exclusive=False, thread=False)
+    async def _warmup_llm(self) -> None:
+        """Warm up the LLM to prefill the KV cache with the system prompt.
+
+        Sends a short empty message through the agent. This triggers one
+        forward pass over the full system prompt, building the KV cache so
+        the first real user message is ~20-50% faster.
+
+        Runs in background during startup — non-blocking, fails silently.
+        """
+        if self._memory is None or self.core_agent is None:
+            logger.info("skipping LLM warmup — memory or agent not ready")
+            return
+
+        logger.info("warming up LLM (prefill KV cache)...")
+        try:
+            # Fire a short empty message — just enough to trigger a forward
+            # pass over the system prompt and build the KV cache.
+            async for _ in self.core_agent.ainteract(prompt="(warmup)"):
+                break  # We only need one forward pass, not a full response
+            logger.info("LLM warmup complete — KV cache prefill done")
+        except Exception:
+            logger.debug("LLM warmup failed (expected if server just started)")
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
