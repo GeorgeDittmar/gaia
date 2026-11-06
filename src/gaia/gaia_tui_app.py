@@ -654,10 +654,11 @@ class GaiaTUIApp(App):
 
         Sends a "hello" message to the agent during startup, so the first
         real user message benefits from a pre-warmed KV cache. The agent's
-        greeting appears as the first message in the chat window.
+        greeting streams into the chat window as the first message.
 
         Runs in background during startup — non-blocking, fails silently.
-        Shows a pulsing "WARMING..." indicator so the user knows it's working.
+        Shows a pulsing "WARMING..." status bar indicator and a dots
+        animation in the chat while waiting for the first token.
         """
         if self._memory is None or self.core_agent is None:
             logger.info("skipping LLM warmup — memory or agent not ready")
@@ -675,38 +676,60 @@ class GaiaTUIApp(App):
 
         # Mount a greeting widget — the agent's response will be streamed here
         greeting_widget = ChatTurn(
-            "[bold #00f0ff]G.A.I.A.[/bold #00f0ff] ",
+            "[bold #00f0ff]G.A.I.A. ([dim #8b949e]connecting...[/dim #8b949e]):[/bold #00f0ff] ",
             classes="agent-msg",
         )
         await chat_box.mount(greeting_widget)
         chat_box.scroll_end()
 
-        try:
-            # Send a "hello" to get the agent to respond — this warms up the
-            # KV cache so subsequent messages are faster.
-            response = ""
-            dots_states = [".  ", ".. ", "..."]
-            dot_index = 0
-            first_token = True
+        base_prefix = (
+            f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
+        )
+        dots_states = [".  ", ".. ", "..."]
+        dot_index = 0
+        first_token_received = False
+        anim_task: asyncio.Task | None = None
 
+        async def animate_waiting() -> None:
+            nonlocal dot_index
+            while not first_token_received and not self.is_shutting_down:
+                greeting_widget.update(
+                    base_prefix + f"[dim #8b949e]{dots_states[dot_index % len(dots_states)]}[/dim #8b949e]"
+                )
+                dot_index += 1
+                await asyncio.sleep(0.2)
+
+        anim_task = asyncio.create_task(animate_waiting())
+
+        try:
+            response_accumulator = ""
             async for token in self.core_agent.ainteract(prompt="hello"):
-                if first_token:
-                    # Cancel the waiting animation and show the greeting
+                if self.is_shutting_down:
+                    break
+
+                if not first_token_received:
+                    first_token_received = True
+                    anim_task.cancel()
+                    try:
+                        await anim_task
+                    except asyncio.CancelledError:
+                        pass
+                    response_accumulator = ""
+                    # Transition status as soon as the agent starts talking
                     self.connection_status = "ONLINE"
                     self._warming_timer.stop()
-                    first_token = False
-                    base_prefix = (
-                        f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):"
-                        f"[/bold #00f0ff] "
-                    )
-                    greeting_widget.update(base_prefix)
-                    response = ""
 
-                response += token
-                greeting_widget.update(base_prefix + response)
+                response_accumulator += token
+                greeting_widget.update(base_prefix + response_accumulator)
                 chat_box.scroll_end()
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
+            if anim_task and not anim_task.done():
+                anim_task.cancel()
+                try:
+                    await anim_task
+                except asyncio.CancelledError:
+                    pass
             greeting_widget.update(
                 f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
                 f"[dim #8b949e]Connection established. Ready.[/dim #8b949e]"
