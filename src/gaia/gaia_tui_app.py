@@ -657,7 +657,7 @@ class GaiaTUIApp(App):
         the first real user message is ~20-50% faster.
 
         Runs in background during startup — non-blocking, fails silently.
-        Shows a pulsing "WARMING..." indicator so the user knows it's working.
+        Shows a pulsing "WARMING..." indicator and a chat message.
         """
         if self._memory is None or self.core_agent is None:
             logger.info("skipping LLM warmup — memory or agent not ready")
@@ -668,6 +668,18 @@ class GaiaTUIApp(App):
         self._warming_timer = self.set_interval(
             0.3, self._animate_warming
         )
+
+        from textual.widgets import Static
+        from textual.containers import ScrollableContainer
+        chat_box = self.query_one("#chat-container", ScrollableContainer)
+
+        await chat_box.mount(
+            Static(
+                "[dim #8b949e]⏳ Warming up LLM — prefilling KV cache...[/dim #8b949e]",
+                id="warmup-status",
+            )
+        )
+
         try:
             # Fire a short empty message — just enough to trigger a forward
             # pass over the system prompt and build the KV cache.
@@ -676,8 +688,19 @@ class GaiaTUIApp(App):
             logger.info("LLM warmup complete — KV cache prefill done")
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
+
         self._warming_timer.stop()
         self.connection_status = "ONLINE"
+
+        try:
+            widget = chat_box.query_one("#warmup-status", Static)
+            widget.update(
+                "[dim #8b949e]✓ KV cache prefill complete[/dim #8b949e]"
+            )
+            await asyncio.sleep(2)
+            widget.remove()
+        except Exception:
+            pass
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
