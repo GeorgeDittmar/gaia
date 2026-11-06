@@ -353,19 +353,19 @@ class GaiaTUIApp(App):
             if new_status == "ONLINE":
                 indicator.add_class("indicator-online")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(False)
+                banner.visible = False
             elif new_status == "CHECKING...":
                 indicator.add_class("indicator-checking")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(False)
+                banner.visible = False
             elif new_status == "WARMING...":
                 indicator.add_class("indicator-warming")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(False)
+                banner.visible = False
             else:
                 indicator.add_class("indicator-unreachable")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(True)
+                banner.visible = True
 
             footer_status = self.query_one("#footer-status", Static)
             footer_status.update(f"[STATUS: {new_status}]")
@@ -690,7 +690,7 @@ class GaiaTUIApp(App):
         banner.update(
             "[dim #8b949e]⏳ Warming up LLM — prefilling KV cache...[/dim #8b949e]"
         )
-        banner.set_visible(True)
+        banner.visible = True
 
         try:
             # Fire a "hello" — triggers forward pass over system prompt,
@@ -717,7 +717,7 @@ class GaiaTUIApp(App):
         self.connection_status = "ONLINE"
         self._warming_timer.stop()
         # Fade out banner after a brief pause
-        self.call_after_refresh(lambda: banner.set_visible(False))
+        self.call_after_refresh(lambda: setattr(banner, 'visible', False))
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
