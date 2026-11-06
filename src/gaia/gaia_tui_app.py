@@ -142,6 +142,12 @@ class GaiaTUIApp(App):
         border-left: wide #f85149;
     }
 
+    .indicator-warming {
+        background: #ff007f;
+        color: #ffffff;
+        text-style: bold;
+    }
+
     #offline-banner {
         height: 1;
         background: #da3633;
@@ -330,17 +336,21 @@ class GaiaTUIApp(App):
         try:
             indicator = self.query_one("#llm-status-indicator", Static)
             indicator.remove_class(
-                "indicator-online", "indicator-checking", "indicator-unreachable"
+                "indicator-online", "indicator-checking",
+                "indicator-unreachable", "indicator-warming",
             )
             indicator.update(f"[bold]{new_status}[/bold]")
 
             if new_status == "ONLINE":
                 indicator.add_class("indicator-online")
-                # Hide offline banner
                 banner = self.query_one("#offline-banner", Static)
                 banner.set_visible(False)
             elif new_status == "CHECKING...":
                 indicator.add_class("indicator-checking")
+                banner = self.query_one("#offline-banner", Static)
+                banner.set_visible(False)
+            elif new_status == "WARMING...":
+                indicator.add_class("indicator-warming")
                 banner = self.query_one("#offline-banner", Static)
                 banner.set_visible(False)
             else:
@@ -617,6 +627,25 @@ class GaiaTUIApp(App):
         """Ping *endpoint* and return 'ONLINE' / 'UNREACHABLE' / 'HTTP <code>'."""
         return await check_endpoint(endpoint)
 
+    def _animate_warming(self) -> None:
+        """Pulse the warming indicator to show progress."""
+        try:
+            indicator = self.query_one("#llm-status-indicator", Static)
+            footer = self.query_one("#footer-status", Static)
+            # Cycle through WARMING, WARMING., WARMING..
+            current = indicator.render_str
+            if "WARMING..." in current:
+                indicator.update("[bold #ff007f]WARMING.[/bold #ff007f]")
+                footer.update("[STATUS: WARMING.]")
+            elif "WARMING." in current and ".." not in current:
+                indicator.update("[bold #ff007f]WARMING..[/bold #ff007f]")
+                footer.update("[STATUS: WARMING..]")
+            else:
+                indicator.update("[bold #ff007f]WARMING...[/bold #ff007f]")
+                footer.update("[STATUS: WARMING...]")
+        except Exception:
+            pass
+
     @work(exclusive=False, thread=False)
     async def _warmup_llm(self) -> None:
         """Warm up the LLM to prefill the KV cache with the system prompt.
@@ -626,12 +655,14 @@ class GaiaTUIApp(App):
         the first real user message is ~20-50% faster.
 
         Runs in background during startup — non-blocking, fails silently.
+        Shows a pulsing "WARMING..." indicator so the user knows it's working.
         """
         if self._memory is None or self.core_agent is None:
             logger.info("skipping LLM warmup — memory or agent not ready")
             return
 
         logger.info("warming up LLM (prefill KV cache)...")
+        self.call_after_refresh(lambda: self.__start_warming())
         try:
             # Fire a short empty message — just enough to trigger a forward
             # pass over the system prompt and build the KV cache.
@@ -640,6 +671,26 @@ class GaiaTUIApp(App):
             logger.info("LLM warmup complete — KV cache prefill done")
         except Exception:
             logger.debug("LLM warmup failed (expected if server just started)")
+        self.call_after_refresh(lambda: self.__stop_warming())
+
+    def __start_warming(self) -> None:
+        """Start the pulsing WARMING indicator."""
+        try:
+            self.connection_status = "WARMING..."
+            self._warming_timer = self.set_interval(
+                0.3, self._animate_warming
+            )
+        except Exception:
+            pass
+
+    def __stop_warming(self) -> None:
+        """Stop the pulsing WARMING indicator and show ONLINE."""
+        try:
+            if hasattr(self, "_warming_timer"):
+                self._warming_timer.stop()
+        except Exception:
+            pass
+        self.connection_status = "ONLINE"
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
