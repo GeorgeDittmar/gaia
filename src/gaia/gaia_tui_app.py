@@ -686,7 +686,7 @@ class GaiaTUIApp(App):
         from textual.containers import ScrollableContainer
         chat_box = self.query_one("#chat-container", ScrollableContainer)
         banner = chat_box.query_one("#startup-status", Static)
-        banner.set_class("startup-banner", True)
+        banner.add_class("startup-banner")
         banner.update(
             "[dim #8b949e]⏳ Warming up LLM — prefilling KV cache...[/dim #8b949e]"
         )
