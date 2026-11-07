@@ -369,7 +369,7 @@ class FileMemoryStore(MemoryStore):
         return records
 
     async def semantic_similarity_search(
-        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+        self, query: str, limit: int = 5, distance_threshold: float = 0.5
     ) -> bool:
         """Check if any fact is similar to *query*.
 

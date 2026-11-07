@@ -721,12 +721,23 @@ class Gaia:
             saved = 0
             skipped = 0
             for fact_text, category, confidence in facts:
-                # Check for potential conflicts first
+                # Dedup check first: skip if an identical or nearly
+                # identical fact already exists.
+                if await self._memory.semantic_similarity_search(
+                    fact_text,
+                    limit=5,
+                    distance_threshold=0.75,
+                ):
+                    skipped += 1
+                    logger.info("skipping duplicate — %s", fact_text[:60])
+                    continue
+
+                # Check for potential conflicts: new fact may contradict
+                # an existing one on the same topic.
                 conflict = await self._detect_facts_conflict(fact_text)
 
                 if conflict is not None:
-                    # New fact contradicts an existing one — save both with
-                    # lower confidence to mark the uncertainty.
+                    # Save both with lower confidence to mark uncertainty.
                     await self._memory.semantic_insert(
                         content=f"[CONFLICT] {fact_text}",
                         category=category,
@@ -739,16 +750,6 @@ class Gaia:
                         "saved CONFLICTING fact [%s] %s (conflict with %s)",
                         category, fact_text[:80], conflict.get("fact_id", "?"),
                     )
-                    continue
-
-                # Dedup check: query memory for similar facts
-                if await self._memory.semantic_similarity_search(
-                    fact_text,
-                    limit=5,
-                    distance_threshold=0.75,
-                ):
-                    skipped += 1
-                    logger.info("skipping duplicate — %s", fact_text[:60])
                     continue
 
                 try:
@@ -837,6 +838,7 @@ class Gaia:
             results = await self._memory.semantic_search(
                 " ".join(list(new_tokens)[:10]),
                 limit=5,
+                distance_threshold=0.75,
             )
         except Exception:
             return None

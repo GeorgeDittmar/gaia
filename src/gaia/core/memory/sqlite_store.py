@@ -510,7 +510,7 @@ class SQLiteMemoryStore(MemoryStore):
     # ── Similarity search ────────────────────────────────────────
 
     async def semantic_similarity_search(
-        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+        self, query: str, limit: int = 5, distance_threshold: float = 0.3
     ) -> bool:
         """Check if any fact is similar to *query*.
 
@@ -526,10 +526,13 @@ class SQLiteMemoryStore(MemoryStore):
         facts = conn.execute(
             "SELECT content FROM semantic_facts LIMIT 500"
         ).fetchall()
+        all_tokens = set(keywords)
+
         for row in facts:
             text = row["content"].lower()
-            score = sum(1 for kw in keywords if kw in text)
-            if score >= max(1, len(keywords) * distance_threshold):
+            text_tokens = set(text.split())
+            overlap = len(all_tokens & text_tokens)
+            if overlap >= max(1, len(all_tokens) * distance_threshold):
                 return True
         return False
 

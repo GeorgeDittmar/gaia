@@ -10,6 +10,7 @@ Business logic is extracted into separate modules:
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -302,7 +303,6 @@ class GaiaTUIApp(App):
     def __init__(self):
         super().__init__()
         _setup_logging()
-        self._warming_phase: int = 0
         logger.info("GaiaTUIApp starting up")
 
         # Load AGENT.md as the canonical system prompt, then merge over
@@ -645,11 +645,13 @@ class GaiaTUIApp(App):
         return await check_endpoint(endpoint)
 
     def _animate_warming(self) -> None:
-        """Pulse the warming indicator to show progress."""
+        """Pulse the warming indicator based on elapsed wall-clock time."""
         try:
             indicator = self.query_one("#llm-status-indicator", Static)
             footer = self.query_one("#footer-status", Static)
-            match self._warming_phase:
+            elapsed = time.time() - self._warming_start
+            phase = int(elapsed * 3) % 3  # ~333ms per phase
+            match phase:
                 case 0:
                     indicator.update("[bold #ff007f]WARMING.[/bold #ff007f]")
                     footer.update("[STATUS: WARMING.]")
@@ -659,7 +661,6 @@ class GaiaTUIApp(App):
                 case _:
                     indicator.update("[bold #ff007f]WARMING...[/bold #ff007f]")
                     footer.update("[STATUS: WARMING...]")
-            self._warming_phase = (self._warming_phase + 1) % 3
         except Exception:
             pass
 
@@ -680,6 +681,7 @@ class GaiaTUIApp(App):
             return
 
         logger.info("warming up LLM (prefill KV cache)...")
+        self._warming_start = time.time()
         self.connection_status = "WARMING..."
         self._warming_timer = self.set_interval(
             0.3, self._animate_warming

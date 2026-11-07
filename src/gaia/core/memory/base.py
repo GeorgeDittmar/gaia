@@ -54,13 +54,13 @@ class MemoryStore(ABC):
 
     @abstractmethod
     async def semantic_similarity_search(
-        self, query: str, limit: int = 5, distance_threshold: float = 0.8
+        self, query: str, limit: int = 5, distance_threshold: float = 0.3
     ) -> bool:
         """Check if any fact is similar to *query*.
 
         Returns True if a fact with similarity >= threshold exists.
-        ChromaDB uses cosine similarity on embeddings; flat-file stores
-        fall back to Jaccard token overlap.
+        ChromaDB uses cosine distance on embeddings; SQLite falls back
+        to keyword overlap scoring.
         """
 
     # ── Episodic memory ──────────────────────────────────────────
