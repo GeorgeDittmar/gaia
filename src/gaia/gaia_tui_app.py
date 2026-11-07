@@ -302,6 +302,7 @@ class GaiaTUIApp(App):
     def __init__(self):
         super().__init__()
         _setup_logging()
+        self._warming_phase: int = 0
         logger.info("GaiaTUIApp starting up")
 
         # Load AGENT.md as the canonical system prompt, then merge over
@@ -648,17 +649,17 @@ class GaiaTUIApp(App):
         try:
             indicator = self.query_one("#llm-status-indicator", Static)
             footer = self.query_one("#footer-status", Static)
-            # Cycle through WARMING, WARMING., WARMING..
-            current = indicator.render_str
-            if "WARMING..." in current:
-                indicator.update("[bold #ff007f]WARMING.[/bold #ff007f]")
-                footer.update("[STATUS: WARMING.]")
-            elif "WARMING." in current and ".." not in current:
-                indicator.update("[bold #ff007f]WARMING..[/bold #ff007f]")
-                footer.update("[STATUS: WARMING..]")
-            else:
-                indicator.update("[bold #ff007f]WARMING...[/bold #ff007f]")
-                footer.update("[STATUS: WARMING...]")
+            match self._warming_phase:
+                case 0:
+                    indicator.update("[bold #ff007f]WARMING.[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING.]")
+                case 1:
+                    indicator.update("[bold #ff007f]WARMING..[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING..]")
+                case _:
+                    indicator.update("[bold #ff007f]WARMING...[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING...]")
+            self._warming_phase = (self._warming_phase + 1) % 3
         except Exception:
             pass
 
