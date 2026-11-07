@@ -100,7 +100,7 @@ Best for: vector search, ChromaDB backend, full isolation.
 | TUI | `textual` | Cyberpunk terminal UI, chat interface |
 | Agent | `pydantic-ai` | LLM interaction, fact extraction |
 | Config | stdlib `json` | settings.json read/write |
-| Memory | stdlib `sqlite3` | Default SQLite memory store |
+| Memory | stdlib | Flat-file memory store (markdown + YAML) |
 | Memory* | `chromadb` | Optional ChromaDB adapter |
 
 *ChromaDB is an **optional dependency** (`uv tool install . --extra memory` or `pip install gaia[memory]`).
@@ -110,8 +110,8 @@ Best for: vector search, ChromaDB backend, full isolation.
 ```
 MemoryStore (ABC — src/gaia/core/memory/base.py)
     │
-    ├── SQLiteMemoryStore (bundled, default)
-    │       └── SQLite + FTS5 full-text search
+    ├── FileMemoryStore (bundled, default)
+    │       └── Flat markdown files + YAML frontmatter + keyword search
     │
     └── ChromaMemoryStore (optional)
             └── HttpClient → external ChromaDB server
@@ -179,10 +179,10 @@ User types message
   "endpoint": "http://host.docker.internal:11434",
   "encrypted": true,
   "system_prompt": "...",
-  "memory_db": "gaia-memory.db",
+  "memory_dir": "~/.gaia/memory",
   "memory": {
-    "backend": "sqlite",
-    "endpoint": null
+    "backend": "file",
+    "retention_days": 30
   }
 }
 ```
@@ -191,9 +191,9 @@ User types message
 |---------|---------|-------------|
 | `model` | `qwen2.5-coder:32b` | Model name passed to LLM |
 | `endpoint` | `http://localhost:11434` | LLM server URL |
-| `memory.backend` | `sqlite` | Memory store: `sqlite` or `chroma` |
-| `memory.endpoint` | `null` | ChromaDB URL (auto from `CHROMA_HOST`) |
-| `memory_db` | `gaia-memory.db` | SQLite filename |
+| `memory.backend` | `file` | Memory store: `file` or `chroma` |
+| `memory_dir` | `~/.gaia/memory` | Directory for flat-file store |
+| `memory.retention_days` | `30` | Days to retain episodic events |
 
 ## Networking
 
@@ -241,7 +241,7 @@ CMD ["--host", "0.0.0.0", "--port", "8000"]
 | `src/gaia/gaia_tui_app.py` | Main Textual app |
 | `src/gaia/core/agent/base.py` | Gaia agent (pydantic-ai) |
 | `src/gaia/core/memory/base.py` | MemoryStore ABC |
-| `src/gaia/core/memory/sqlite_store.py` | SQLite backend |
+| `src/gaia/core/memory/file_store.py` | Flat-file backend |
 | `src/gaia/core/memory/chroma_store.py` | ChromaDB HTTP adapter |
 | `src/gaia/config.py` | Config loading, defaults |
 | `Dockerfile` | Gaia container image |

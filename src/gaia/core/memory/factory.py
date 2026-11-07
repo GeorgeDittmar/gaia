@@ -30,12 +30,6 @@ class MemoryFactory:
     def create(settings: Settings) -> MemoryStore | None:
         """Create a memory store without initializing it."""
         match settings.memory.backend:
-            case "sqlite":
-                from gaia.core.memory.sqlite_store import SQLiteMemoryStore
-
-                db_path = SETTINGS_DIR / "gaia-memory.db"
-                return SQLiteMemoryStore(db_path)
-
             case "file":
                 from gaia.core.memory.file_store import FileMemoryStore
 

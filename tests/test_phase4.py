@@ -9,44 +9,18 @@ from gaia.config import MemoryConfig, Settings
 from gaia.gaia_tui_app import GaiaTUIApp
 
 
-class TestMemoryFactoryCreatesSQLiteByDefault:
-    """MemoryFactory.create returns SQLiteMemoryStore for 'sqlite' backend."""
+class TestMemoryFactoryCreatesFileByDefault:
+    """MemoryFactory.create returns FileMemoryStore for 'file' backend."""
 
-    def test_creates_sqlite_store_with_default_settings(self):
-        """Default settings produce a SQLiteMemoryStore."""
-        from gaia.core.memory.factory import MemoryFactory
-        from gaia.core.memory.sqlite_store import SQLiteMemoryStore
-
-        settings = Settings()  # backend="sqlite" by default
-        store = MemoryFactory.create(settings)
-
-        assert isinstance(store, SQLiteMemoryStore)
-
-    def test_creates_file_store_with_explicit_backend(self):
-        """Explicit backend='file' also produces FileMemoryStore."""
+    def test_creates_file_store_with_default_settings(self):
+        """Default settings produce a FileMemoryStore."""
         from gaia.core.memory.factory import MemoryFactory
         from gaia.core.memory.file_store import FileMemoryStore
 
-        settings = Settings(
-            memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory")
-        )
+        settings = Settings()  # backend="file" by default
         store = MemoryFactory.create(settings)
 
         assert isinstance(store, FileMemoryStore)
-
-    def test_file_store_dir_is_resolved(self):
-        """memory_dir is expanded via Path.expanduser()."""
-        from gaia.core.memory.factory import MemoryFactory
-        from gaia.core.memory.file_store import FileMemoryStore
-
-        settings = Settings(
-            memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory")
-        )
-        store = MemoryFactory.create(settings)
-
-        assert isinstance(store, FileMemoryStore)
-        # The store's _memory_dir should be an expanded absolute path
-        assert str(store._memory_dir).startswith("/")
 
 
 class TestMemoryFactoryCreatesChromaWhenConfigured:

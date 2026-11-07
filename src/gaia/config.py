@@ -21,7 +21,7 @@ class MemoryConfig:
     ``Settings.from_dict()`` which validates the backend value.
     """
 
-    backend: str = "sqlite"  # "sqlite", "file", or "chroma"
+    backend: str = "file"  # "file" or "chroma"
     memory_dir: str = "~/.gaia/memory"
     retention_days: int = 30
     chroma_endpoint: str | None = None  # ChromaDB HTTP server URL (auto-detected from CHROMA_HOST env)
@@ -53,12 +53,12 @@ class Settings:
             # Bare string: treat as backend name
             backend = mem_raw
         elif isinstance(mem_raw, dict):
-            backend = mem_raw.get("backend", "sqlite")
+            backend = mem_raw.get("backend", "file")
         else:
             # None, int, or other non-dict → use default
-            backend = "sqlite"
-        if backend not in ("sqlite", "file", "chroma"):
-            backend = "sqlite"
+            backend = "file"
+        if backend not in ("file", "chroma"):
+            backend = "file"
         return cls(
             model=d.get("model", cls.model),
             endpoint=d.get("endpoint", cls.endpoint),
@@ -106,7 +106,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_context_tokens": 4000,
     "memory_dir": "~/.gaia/memory",
     "memory": {
-        "backend": "sqlite",  # "sqlite", "file", or "chroma"
+        "backend": "file",  # "file" or "chroma"
         "retention_days": 30,
     },
     "system_prompt": (
