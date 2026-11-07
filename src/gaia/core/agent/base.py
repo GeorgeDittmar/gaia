@@ -24,6 +24,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
 
+from gaia.config import SETTINGS_DIR
 from gaia.core.context import ContextWindow, _DEFAULT_MAX_TOKENS, _DEFAULT_MIN_AGE_TURNS
 
 # Auto-classification keywords for extracted facts
@@ -41,7 +42,7 @@ _PROJECT_KEYWORDS = frozenset([
 
 logger = logging.getLogger("gaia.extract")
 
-_USER_SUMMARY_PATH = Path.home() / ".gaia" / "user_summary.md"
+_USER_SUMMARY_PATH = SETTINGS_DIR / "user_summary.md"
 
 
 from gaia.core.memory.file_store import _build_frontmatter, _parse_frontmatter
