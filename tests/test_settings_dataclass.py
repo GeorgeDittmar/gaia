@@ -6,7 +6,7 @@ from gaia.config import DEFAULT_SETTINGS, MemoryConfig, Settings
 class TestMemoryConfig:
     def test_defaults(self) -> None:
         cfg = MemoryConfig()
-        assert cfg.backend == "file"
+        assert cfg.backend == "sqlite"
         assert cfg.memory_dir == "~/.gaia/memory"
 
     def test_custom_values(self) -> None:
@@ -37,7 +37,7 @@ class TestSettings:
 
     def test_memory_config_default(self) -> None:
         s = Settings()
-        assert s.memory.backend == "file"
+        assert s.memory.backend == "sqlite"
 
     def test_from_dict_valid(self) -> None:
         d = {"model": "llama3.3:70b", "endpoint": "http://test.local", "encrypted": False}
@@ -46,30 +46,30 @@ class TestSettings:
         assert s.endpoint == "http://test.local"
         assert s.encrypted is False
 
-    def test_from_dict_invalid_backend_defaults_to_file(self) -> None:
+    def test_from_dict_invalid_backend_defaults_to_sqlite(self) -> None:
         d = {"memory": {"backend": "postgres"}}
         s = Settings.from_dict(d)
-        assert s.memory.backend == "file"
+        assert s.memory.backend == "sqlite"
 
     def test_from_dict_missing_keys_uses_defaults(self) -> None:
         s = Settings.from_dict({})
         assert s.model == DEFAULT_SETTINGS["model"]
         assert s.endpoint == DEFAULT_SETTINGS["endpoint"]
 
-    def test_from_dict_memory_none_defaults_to_file(self) -> None:
+    def test_from_dict_memory_none_defaults_to_sqlite(self) -> None:
         """When memory is None (not absent), from_dict should not crash."""
         s = Settings.from_dict({"memory": None})
-        assert s.memory.backend == "file"
+        assert s.memory.backend == "sqlite"
 
     def test_from_dict_memory_string_defaults_to_file(self) -> None:
-        """When memory is a bare string, from_dict should not crash."""
+        """When memory is a bare string 'file', from_dict should accept it."""
         s = Settings.from_dict({"memory": "file"})
         assert s.memory.backend == "file"
 
-    def test_from_dict_memory_int_defaults_to_file(self) -> None:
+    def test_from_dict_memory_int_defaults_to_sqlite(self) -> None:
         """Any non-dict memory value falls back gracefully."""
         s = Settings.from_dict({"memory": 42})
-        assert s.memory.backend == "file"
+        assert s.memory.backend == "sqlite"
 
     def test_save_roundtrip(self) -> None:
         original = Settings(
@@ -88,5 +88,5 @@ class TestSettings:
 
     def test_to_dict_contains_memory_backend(self) -> None:
         d = Settings().to_dict()
-        assert d["memory"]["backend"] == "file"
+        assert d["memory"]["backend"] == "sqlite"
         assert d["memory_dir"] == "~/.gaia/memory"

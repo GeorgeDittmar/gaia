@@ -6,10 +6,11 @@ Creates stores based on the configured backend but does NOT call
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gaia.config import Settings
+from gaia.config import Settings, SETTINGS_DIR
 
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
@@ -29,14 +30,27 @@ class MemoryFactory:
     def create(settings: Settings) -> MemoryStore | None:
         """Create a memory store without initializing it."""
         match settings.memory.backend:
+            case "sqlite":
+                from gaia.core.memory.sqlite_store import SQLiteMemoryStore
+
+                db_path = SETTINGS_DIR / "gaia-memory.db"
+                return SQLiteMemoryStore(db_path)
+
             case "file":
                 from gaia.core.memory.file_store import FileMemoryStore
 
                 memory_dir = Path(settings.memory.memory_dir).expanduser()
                 return FileMemoryStore(memory_dir)
+
             case "chroma":
                 from gaia.core.memory.chroma_store import ChromaMemoryStore
 
-                return ChromaMemoryStore()
+                endpoint = settings.memory.chroma_endpoint
+                if endpoint is None:
+                    host = os.environ.get("CHROMA_HOST", "host.containers.internal")
+                    port = os.environ.get("CHROMA_PORT", "8000")
+                    endpoint = f"http://{host}:{port}"
+                return ChromaMemoryStore(endpoint=endpoint)
+
             case _:
                 return None

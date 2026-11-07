@@ -9,21 +9,18 @@ from gaia.config import MemoryConfig, Settings
 from gaia.gaia_tui_app import GaiaTUIApp
 
 
-class TestMemoryFactoryCreatesFileByDefault:
-    """MemoryFactory.create returns FileMemoryStore for 'file' backend."""
+class TestMemoryFactoryCreatesSQLiteByDefault:
+    """MemoryFactory.create returns SQLiteMemoryStore for 'sqlite' backend."""
 
-    def test_creates_file_store_with_default_settings(self):
-        """Default settings produce a FileMemoryStore."""
-        with (
-            patch("gaia.gaia_tui_app.MemoryFactory"),
-        ):
-            from gaia.core.memory.factory import MemoryFactory
-            from gaia.core.memory.file_store import FileMemoryStore
+    def test_creates_sqlite_store_with_default_settings(self):
+        """Default settings produce a SQLiteMemoryStore."""
+        from gaia.core.memory.factory import MemoryFactory
+        from gaia.core.memory.sqlite_store import SQLiteMemoryStore
 
-            settings = Settings()  # backend="file" by default
-            store = MemoryFactory.create(settings)
+        settings = Settings()  # backend="sqlite" by default
+        store = MemoryFactory.create(settings)
 
-        assert isinstance(store, FileMemoryStore)
+        assert isinstance(store, SQLiteMemoryStore)
 
     def test_creates_file_store_with_explicit_backend(self):
         """Explicit backend='file' also produces FileMemoryStore."""
@@ -75,11 +72,11 @@ class TestMemoryFactoryReturnsNoneForUnknownBackend:
     """MemoryFactory.create returns None for unknown backends."""
 
     def test_unknown_backend_returns_none(self):
-        """backend='sqlite' (or anything else) returns None."""
+        """backend='postgres' (or anything else invalid) returns None."""
         from gaia.core.memory.factory import MemoryFactory
 
         settings = Settings(
-            memory=MemoryConfig(backend="sqlite", memory_dir="~/.gaia/memory")
+            memory=MemoryConfig(backend="postgres", memory_dir="~/.gaia/memory")
         )
         store = MemoryFactory.create(settings)
 

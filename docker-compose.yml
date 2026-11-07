@@ -1,0 +1,69 @@
+# docker-compose.yml — G.A.I.A. application with ChromaDB memory service
+#
+# Services:
+#   gaia      — The TUI application (connects to ChromaDB + LLM endpoint)
+#   chroma    — ChromaDB vector store (semantic + episodic memory)
+#   llama     — (optional) Ollama for the LLM backend
+#
+# Usage:
+#   docker compose up -d              # start everything
+#   docker compose up gaia -d         # start Gaia + dependencies
+#   docker compose logs -f gaia       # follow Gaia's output
+#
+# Memory backend is selected in settings.json:
+#   "memory": { "backend": "chroma" }
+# Gaia resolves "chroma" via the "chroma" service name on the Docker network.
+
+services:
+  # ── ChromaDB — vector memory store ──────────────────────────────
+  chroma:
+    build:
+      context: .
+      dockerfile: Dockerfile.chroma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    # Expose as "chroma" on the compose network (Gaia connects here)
+    # Environment can be set for embedding models, auth, etc.
+
+  # ── G.A.I.A. TUI application ────────────────────────────────────
+  gaia:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Connect to ChromaDB via compose network service name
+    environment:
+      - LLM_ENDPOINT=${LLM_ENDPOINT:-http://host.docker.internal:11434}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - GAIA_HOME=/home/gaia/data
+    volumes:
+      # Persist Gaia settings, memory DB, logs outside the container
+      - gaia-data:/home/gaia/data
+    # Give terminal dimensions so Textual layout matches host
+    stdin_open: true
+    tty: true
+
+  # ── Ollama — local LLM backend (optional) ───────────────────────
+  # Uncomment to run a local LLM in the compose stack:
+  #
+  # llama:
+  #   image: ollama/ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #
+  # Then set: LLM_ENDPOINT=http://llama:11434
+
+volumes:
+  chroma-data:
+    driver: local
+  gaia-data:
+    driver: local
+# ollama-data:
+#   driver: local

@@ -142,12 +142,27 @@ class GaiaTUIApp(App):
         border-left: wide #f85149;
     }
 
+    .indicator-warming {
+        background: #ff007f;
+        color: #ffffff;
+        text-style: bold;
+    }
+
     #offline-banner {
         height: 1;
         background: #da3633;
         color: #ffffff;
         content-align: center middle;
         text-style: bold;
+        dock: top;
+        visibility: hidden;
+    }
+
+    .startup-banner {
+        height: 1;
+        background: #161b22;
+        color: #8b949e;
+        content-align: center middle;
         dock: top;
         visibility: hidden;
     }
@@ -287,6 +302,7 @@ class GaiaTUIApp(App):
     def __init__(self):
         super().__init__()
         _setup_logging()
+        self._warming_phase: int = 0
         logger.info("GaiaTUIApp starting up")
 
         # Load AGENT.md as the canonical system prompt, then merge over
@@ -330,23 +346,27 @@ class GaiaTUIApp(App):
         try:
             indicator = self.query_one("#llm-status-indicator", Static)
             indicator.remove_class(
-                "indicator-online", "indicator-checking", "indicator-unreachable"
+                "indicator-online", "indicator-checking",
+                "indicator-unreachable", "indicator-warming",
             )
             indicator.update(f"[bold]{new_status}[/bold]")
 
             if new_status == "ONLINE":
                 indicator.add_class("indicator-online")
-                # Hide offline banner
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(False)
+                banner.visible = False
             elif new_status == "CHECKING...":
                 indicator.add_class("indicator-checking")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(False)
+                banner.visible = False
+            elif new_status == "WARMING...":
+                indicator.add_class("indicator-warming")
+                banner = self.query_one("#offline-banner", Static)
+                banner.visible = False
             else:
                 indicator.add_class("indicator-unreachable")
                 banner = self.query_one("#offline-banner", Static)
-                banner.set_visible(True)
+                banner.visible = True
 
             footer_status = self.query_one("#footer-status", Static)
             footer_status.update(f"[STATUS: {new_status}]")
@@ -375,10 +395,10 @@ class GaiaTUIApp(App):
     _SUMMARIZE_MIN_AGE_MINUTES = 30
 
     def _schedule_startup_extraction(self) -> None:
-        """Extract facts from any episodic memory that hasn't been processed yet."""
+        """Launch the background extraction loop on app startup."""
         if self._memory is None:
             return
-        self.call_after_refresh(self._run_periodic_extraction)
+        self._periodic_extraction_loop()
 
     @work(exclusive=False, thread=False)
     async def _run_periodic_extraction(self) -> None:
@@ -393,6 +413,25 @@ class GaiaTUIApp(App):
                 logger.info("periodic extraction saved %d facts", count)
         except Exception:
             logger.exception("periodic extraction failed")
+
+    @work(exclusive=False, thread=False)
+    async def _periodic_extraction_loop(self) -> None:
+        """Background loop that periodically extracts facts from episodic memory.
+
+        Runs every 5 minutes. Uses ``call_after_refresh`` so the extraction
+        runs as a background task on the event loop without blocking the
+        interval timer.
+        """
+        while not self.is_shutting_down:
+            for _ in range(300):
+                if self.is_shutting_down:
+                    return
+                await asyncio.sleep(1)
+
+            if self.is_shutting_down:
+                return
+
+            self.call_after_refresh(self._run_periodic_extraction)
 
     @work(exclusive=False, thread=False)
     async def _run_background_summary_check(self) -> None:
@@ -489,6 +528,11 @@ class GaiaTUIApp(App):
 
         with ScrollableContainer(id="chat-container"):
             yield Static(
+                "",
+                id="startup-status",
+                classes="startup-banner",
+            )
+            yield Static(
                 "[bold #ff007f]G.A.I.A. SYSTEM INITIALIZED[/bold #ff007f]\n"
                 "[dim #8b949e]Encryption layers validated | Zero-Telemetry Mode[/dim #8b949e]\n"
                 "[dim #8b949e]Type [bold #ff007f]/[/bold #ff007f] for commands "
@@ -522,6 +566,7 @@ class GaiaTUIApp(App):
         self._refresh_config_info()
         self.watch_connection_status(self.connection_status)
         self.ping_loop()
+        self._warmup_llm()
         self._mount_autocomplete_popup()
         if self._memory is not None:
             try:
@@ -585,7 +630,9 @@ class GaiaTUIApp(App):
             if self.is_shutting_down:
                 break
 
-            if status != self.connection_status:
+            # Don't overwrite WARMING during KV cache prefill — let the
+            # warmup animation finish before the indicator goes ONLINE.
+            if status != self.connection_status and self.connection_status != "WARMING...":
                 self.connection_status = status
 
             for _ in range(30):
@@ -596,6 +643,121 @@ class GaiaTUIApp(App):
     async def _check_connection(self, endpoint: str) -> str:
         """Ping *endpoint* and return 'ONLINE' / 'UNREACHABLE' / 'HTTP <code>'."""
         return await check_endpoint(endpoint)
+
+    def _animate_warming(self) -> None:
+        """Pulse the warming indicator to show progress."""
+        try:
+            indicator = self.query_one("#llm-status-indicator", Static)
+            footer = self.query_one("#footer-status", Static)
+            match self._warming_phase:
+                case 0:
+                    indicator.update("[bold #ff007f]WARMING.[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING.]")
+                case 1:
+                    indicator.update("[bold #ff007f]WARMING..[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING..]")
+                case _:
+                    indicator.update("[bold #ff007f]WARMING...[/bold #ff007f]")
+                    footer.update("[STATUS: WARMING...]")
+            self._warming_phase = (self._warming_phase + 1) % 3
+        except Exception:
+            pass
+
+    @work(exclusive=False, thread=False)
+    async def _warmup_llm(self) -> None:
+        """Warm up the LLM to prefill the KV cache with the system prompt.
+
+        Sends a "hello" message to the agent during startup, so the first
+        real user message benefits from a pre-warmed KV cache. The agent's
+        greeting streams into the chat window as the first message.
+
+        A startup banner at the top shows "Warming up LLM..." with
+        animated dots. Transitions to ONLINE once the agent starts
+        responding. Banner fades away after the greeting completes.
+        """
+        if self._memory is None or self.core_agent is None:
+            logger.info("skipping LLM warmup — memory or agent not ready")
+            return
+
+        logger.info("warming up LLM (prefill KV cache)...")
+        self.connection_status = "WARMING..."
+        self._warming_timer = self.set_interval(
+            0.3, self._animate_warming
+        )
+
+        from textual.containers import ScrollableContainer
+        chat_box = self.query_one("#chat-container", ScrollableContainer)
+        banner = chat_box.query_one("#startup-status", Static)
+        banner.add_class("startup-banner")
+        banner.update("[dim #8b949e]Warming up LLM")
+        banner.visible = True
+
+        base_prefix = (
+            f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
+        )
+        dots_states = [".  ", ".. ", "..."]
+        dot_index = 0
+        first_token_received = False
+        greeting_widget: ChatTurn | None = None
+        anim_task: asyncio.Task | None = None
+
+        async def animate_banner() -> None:
+            nonlocal dot_index
+            while not first_token_received and not self.is_shutting_down:
+                banner.update(
+                    f"[dim #8b949e]Warming up LLM{dots_states[dot_index % len(dots_states)]}[/dim #8b949e]"
+                )
+                dot_index += 1
+                await asyncio.sleep(0.25)
+
+        anim_task = asyncio.create_task(animate_banner())
+
+        try:
+            greeting_widget = ChatTurn(
+                "[bold #00f0ff]G.A.I.A. ([dim #8b949e]connecting...[/dim #8b949e]):[/bold #00f0ff] ",
+                classes="agent-msg",
+            )
+            await chat_box.mount(greeting_widget)
+            chat_box.scroll_end()
+
+            response = ""
+            async for token in self.core_agent.ainteract(prompt="hello"):
+                if self.is_shutting_down:
+                    break
+
+                if not first_token_received:
+                    first_token_received = True
+                    anim_task.cancel()
+                    try:
+                        await anim_task
+                    except asyncio.CancelledError:
+                        pass
+                    response = ""
+                    self.connection_status = "ONLINE"
+                    self._warming_timer.stop()
+
+                response += token
+                greeting_widget.update(base_prefix + response)
+                chat_box.scroll_end()
+        except Exception:
+            logger.debug("LLM warmup failed (expected if server just started)")
+            if anim_task and not anim_task.done():
+                anim_task.cancel()
+                try:
+                    await anim_task
+                except asyncio.CancelledError:
+                    pass
+            if greeting_widget:
+                greeting_widget.update(
+                    f"[bold #00f0ff]G.A.I.A. ({self.settings.model}):[/bold #00f0ff] "
+                    f"[dim #8b949e]Connection ready.[/dim #8b949e]"
+                )
+            self.connection_status = "ONLINE"
+            self._warming_timer.stop()
+
+        # Fade out banner
+        self.call_after_refresh(lambda: setattr(banner, 'visible', False))
+        logger.info("LLM warmup complete — KV cache prefill done")
 
     def action_show_help(self) -> None:
         self.push_screen(HelpModal())
@@ -671,4 +833,4 @@ class GaiaTUIApp(App):
             logger.info(
                 "turn %d — triggering periodic fact extraction", self._turn_count
             )
-            asyncio.get_event_loop().call_later(5, self._run_periodic_extraction)
+            self.call_after_refresh(self._run_periodic_extraction)

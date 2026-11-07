@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SETTINGS_DIR = Path(os.path.expanduser("~/.gaia"))
+# Respect GAIA_HOME env var (set by Docker/Podman) to override the
+# default user-data directory; falls back to ~/.gaia otherwise.
+_GAIA_HOME = Path(os.environ.get("GAIA_HOME", Path.home() / ".gaia"))
+SETTINGS_DIR = _GAIA_HOME
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 
@@ -18,9 +21,10 @@ class MemoryConfig:
     ``Settings.from_dict()`` which validates the backend value.
     """
 
-    backend: str = "file"  # "file" or "chroma"
+    backend: str = "sqlite"  # "sqlite", "file", or "chroma"
     memory_dir: str = "~/.gaia/memory"
     retention_days: int = 30
+    chroma_endpoint: str | None = None  # ChromaDB HTTP server URL (auto-detected from CHROMA_HOST env)
 
 
 @dataclass(frozen=True)
@@ -44,12 +48,17 @@ class Settings:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Settings":
         """Merge *d* over defaults, validate, return ``Settings``."""
-        mem_cfg = d.get("memory") or {}
-        if not isinstance(mem_cfg, dict):
-            mem_cfg = {}
-        backend = mem_cfg.get("backend", "file")
-        if backend not in ("file", "chroma"):
-            backend = "file"
+        mem_raw = d.get("memory")
+        if isinstance(mem_raw, str):
+            # Bare string: treat as backend name
+            backend = mem_raw
+        elif isinstance(mem_raw, dict):
+            backend = mem_raw.get("backend", "sqlite")
+        else:
+            # None, int, or other non-dict → use default
+            backend = "sqlite"
+        if backend not in ("sqlite", "file", "chroma"):
+            backend = "sqlite"
         return cls(
             model=d.get("model", cls.model),
             endpoint=d.get("endpoint", cls.endpoint),
@@ -61,7 +70,10 @@ class Settings:
             memory=MemoryConfig(
                 backend=backend,
                 memory_dir=d.get("memory_dir", "~/.gaia/memory"),
-                retention_days=mem_cfg.get("retention_days", MemoryConfig.retention_days),
+                retention_days=(mem_raw.get("retention_days", MemoryConfig.retention_days)
+                                if isinstance(mem_raw, dict) else MemoryConfig.retention_days),
+                chroma_endpoint=(mem_raw.get("chroma_endpoint")
+                                 if isinstance(mem_raw, dict) else None),
             ),
         )
 
@@ -83,17 +95,18 @@ class Settings:
             "memory": {
                 "backend": self.memory.backend,
                 "retention_days": self.memory.retention_days,
+                "chroma_endpoint": self.memory.chroma_endpoint,
             },
         }
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "qwen2.5-coder:32b",
-    "endpoint": "http://127.0.0.1:8080",
+    "endpoint": "http://127.0.0.1:8080",  # OpenAI-compatible default; override with LLM_ENDPOINT or /settings
     "encrypted": True,
     "max_context_tokens": 4000,
     "memory_dir": "~/.gaia/memory",
     "memory": {
-        "backend": "file",  # "file" or "chroma"
+        "backend": "sqlite",  # "sqlite", "file", or "chroma"
         "retention_days": 30,
     },
     "system_prompt": (

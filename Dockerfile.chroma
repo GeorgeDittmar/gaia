@@ -1,0 +1,12 @@
+# ChromaDB server for G.A.I.A. memory
+# Runs ChromaDB as a standalone HTTP service — no GPU needed
+
+FROM ghcr.io/chroma-core/chroma:latest
+
+EXPOSE 8000
+
+# Persist data volume
+VOLUME ["/chroma/chroma"]
+
+# Default ChromaDB port
+CMD ["--host", "0.0.0.0", "--port", "8000"]

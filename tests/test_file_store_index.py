@@ -1,11 +1,10 @@
-"""Tests for the file-based memory store index sidecar.
+"""Tests for the file-based memory store in-memory index.
 
-Verifies that ``_build_index``, ``_persist_index``, and the index-aware
+Verifies that ``_build_index`` populates the index and the index-aware
 versions of ``episodic_prune``, ``episodic_get_conversation``, and
 ``episodic_search`` behave correctly.
 """
 
-import json
 from pathlib import Path
 
 import pytest
@@ -83,48 +82,37 @@ class TestIndexBuilding:
         assert meta2["event_type"] == "agent_response"
         assert str(episodic_dir / "ev-2.md") in store._index["episodic/ev-2"][0]
 
-    def test_index_persists_and_reloads(self, tmp_path: Path) -> None:
-        """_persist_index writes to disk and reloaded data matches."""
+    def test_build_index_includes_audit_entries(self, tmp_path: Path) -> None:
+        """_build_index indexes audit entries (entry_id) alongside other types."""
         memory_dir = tmp_path / "memory"
         episodic_dir = memory_dir / "episodic"
+        audit_dir = memory_dir / "audit"
         episodic_dir.mkdir(parents=True)
+        audit_dir.mkdir(parents=True)
 
         _write_episode(
             episodic_dir,
-            event_id="persist-1",
+            event_id="ev-idx",
             event_type="user_message",
-            conversation_id="conv-b",
-            timestamp="2025-02-01T00:00:00+00:00",
+            conversation_id="conv-c",
+            timestamp="2025-01-15T00:00:00+00:00",
             payload="{}",
-            created_at="2025-02-01T00:00:00+00:00",
-            body="Persist test.",
+            created_at="2025-01-15T00:00:00+00:00",
+            body="Index coverage test.",
+        )
+
+        audit_path = audit_dir / "audit-idx.md"
+        audit_path.write_text(
+            "---\nentry_id: audit-idx\ntimestamp: 2025-01-15T00:00:00+00:00\naction: test\nactor: system\n---\naudit entry\n",
+            encoding="utf-8",
         )
 
         store = FileMemoryStore(memory_dir=memory_dir)
         store._build_index()
-        store._persist_index()
 
-        index_path = memory_dir.parent / ".gaia_memory_index.json"
-        assert index_path.exists()
-
-        with open(index_path, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-
-        assert "episodic/persist-1" in saved
-        assert saved["episodic/persist-1"][0] == str(episodic_dir / "persist-1.md")
-        assert saved["episodic/persist-1"][1]["event_type"] == "user_message"
-
-        # Simulate a fresh store loading from disk
-        store2 = FileMemoryStore(memory_dir=memory_dir)
-        store2._index = {}
-        with open(index_path, "r", encoding="utf-8") as f:
-            store2._index = {
-                k: (v[0], dict(v[1]))
-                for k, v in json.load(f).items()
-            }
-
-        assert "episodic/persist-1" in store2._index
-        assert store2._index["episodic/persist-1"][1]["event_type"] == "user_message"
+        assert "episodic/ev-idx" in store._index
+        assert "audit/audit-idx" in store._index
+        assert len(store._index) == 2
 
 
 # ── TestPruneWithIndex ──────────────────────────────────────────────
