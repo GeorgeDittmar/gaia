@@ -198,23 +198,21 @@ class TestRemoveByIdHelper:
     def test_remove_by_id_removes_matching_widget(self):
         """_remove_by_id removes the widget with the given ID."""
         from textual.containers import ScrollableContainer
-        from textual.widgets import Static
 
         from gaia.slash_commands import _remove_by_id
 
         container = MagicMock(spec=ScrollableContainer)
-        widget = MagicMock(spec=Static)
+        widget = MagicMock()
         container.query_one.return_value = widget
 
         _remove_by_id(container, "my-id")
 
-        container.query_one.assert_called_once_with("#my-id", Static)
+        container.query_one.assert_called_once_with("#my-id")
         widget.remove.assert_called_once()
 
     def test_remove_by_id_noop_when_widget_not_found(self):
         """_remove_by_id does not crash when widget doesn't exist."""
         from textual.containers import ScrollableContainer
-        from textual.widgets import Static
 
         from gaia.slash_commands import _remove_by_id
 
@@ -224,4 +222,4 @@ class TestRemoveByIdHelper:
         # Should not raise
         _remove_by_id(container, "nonexistent-id")
 
-        container.query_one.assert_called_once_with("#nonexistent-id", Static)
+        container.query_one.assert_called_once_with("#nonexistent-id")

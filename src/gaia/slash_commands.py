@@ -46,7 +46,7 @@ def _remove_by_id(container: ScrollableContainer, widget_id: str) -> None:
     argument, so we query by ID and call ``.remove()`` on the match.
     """
     try:
-        widget = container.query_one(f"#{widget_id}", Static)
+        widget = container.query_one(f"#{widget_id}")
         widget.remove()
     except Exception:
         pass  # widget not found — nothing to remove
@@ -403,8 +403,11 @@ class SlashCommandHandler:
                     )
 
             case "summary":
-                summary_path = Path.home() / ".gaia" / "user_summary.md"
-                if summary_path.exists():
+                try:
+                    from gaia.core.agent.base import _USER_SUMMARY_PATH as summary_path
+                except ImportError:
+                    summary_path = None  # pragma: no cover
+                if summary_path and summary_path.exists():
                     try:
                         raw = summary_path.read_text(encoding="utf-8")
                         _, content = _parse_frontmatter(raw)
