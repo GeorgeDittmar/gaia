@@ -15,6 +15,9 @@ import pytest
 
 from gaia.core.memory.chroma_store import ChromaMemoryStore
 
+# 384-dim zero vector used as mock embedding
+_ZERO_VEC = [0.0] * 384
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
@@ -54,7 +57,7 @@ def _make_mock_client() -> tuple[MagicMock, dict[str, MagicMock]]:
         "gaia_semantic", "gaia_episodic", "gaia_procedure", "gaia_audit"
     )}
     client_mock = MagicMock()
-    client_mock.get_or_create_collection.side_effect = lambda n: collections.get(
+    client_mock.get_or_create_collection.side_effect = lambda n, **kw: collections.get(
         n, _make_mock_collection()
     )
     return client_mock, collections
@@ -69,7 +72,11 @@ def chroma_mock() -> tuple[MagicMock, dict[str, MagicMock]]:
     client_mock, collections = _make_mock_client()
     with patch("gaia.core.memory.chroma_store.HttpClient", return_value=client_mock):
         with patch("gaia.core.memory.chroma_store.chromadb", MagicMock()):
-            yield client_mock, collections
+            with patch(
+                "gaia.core.memory.chroma_store.generate_embedding",
+                return_value=_ZERO_VEC,
+            ):
+                yield client_mock, collections
 
 
 @pytest.fixture
@@ -96,7 +103,7 @@ class TestSemanticMemory:
         semantic_coll = collections["gaia_semantic"]
         assert semantic_coll.add.call_count == 1
         call_kwargs = semantic_coll.add.call_args.kwargs
-        assert call_kwargs["documents"] == ["test fact"]
+        assert call_kwargs["embeddings"] == [_ZERO_VEC]
         assert len(call_kwargs["metadatas"][0]) > 0
 
     async def test_search_returns_formatted_result(
@@ -142,6 +149,7 @@ class TestSemanticMemory:
         collections = chroma_mock[1]
         call_kwargs = collections["gaia_semantic"].query.call_args.kwargs
         assert call_kwargs["n_results"] == 5
+        assert call_kwargs["query_embeddings"] == [_ZERO_VEC]
 
     async def test_insert_with_optional_fields(
         self, store: ChromaMemoryStore, chroma_mock,

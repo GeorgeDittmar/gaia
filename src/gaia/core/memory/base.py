@@ -55,12 +55,16 @@ class MemoryStore(ABC):
     @abstractmethod
     async def semantic_similarity_search(
         self, query: str, limit: int = 5, distance_threshold: float = 0.3
-    ) -> bool:
-        """Check if any fact is similar to *query*.
+    ) -> list[dict]:
+        """Find facts semantically similar to *query*.
 
-        Returns True if a fact with similarity >= threshold exists.
-        ChromaDB uses cosine distance on embeddings; SQLite falls back
-        to keyword overlap scoring.
+        Returns a list of matching fact dicts (empty if none), sorted
+        by similarity.  Each dict contains ``fact_id``, ``content``,
+        ``distance``, and other fields from the store.  Backends may
+        return a subset of these fields.
+
+        ``distance_threshold`` is used to filter results — only facts
+        with cosine distance <= threshold are included.
         """
 
     # ── Episodic memory ──────────────────────────────────────────

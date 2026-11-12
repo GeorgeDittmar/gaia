@@ -21,7 +21,6 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 try:
@@ -32,6 +31,7 @@ except ImportError:
     HttpClient = None  # type: ignore[assignment,misc]
 
 from gaia.core.memory.base import MemoryStore
+from gaia.core.memory.embedding import generate_embedding, embedding_dim
 
 
 def _now_iso() -> str:
@@ -84,7 +84,7 @@ class ChromaMemoryStore(MemoryStore):
         if endpoint is None:
             import os
 
-            host = os.environ.get("CHROMA_HOST", "host.containers.internal")
+            host = os.environ.get("CHROMA_HOST", "localhost")
             port = os.environ.get("CHROMA_PORT", "8000")
             endpoint = f"http://{host}:{port}"
 
@@ -98,7 +98,11 @@ class ChromaMemoryStore(MemoryStore):
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def initialize(self) -> None:
-        """Connect to the ChromaDB HTTP server and create collections."""
+        """Connect to the ChromaDB HTTP server and create collections.
+
+        All collections use explicit client-side embeddings (sentence-transformers)
+        rather than ChromaDB's built-in embedding functions.
+        """
         if chromadb is None or HttpClient is None:
             raise RuntimeError(
                 "ChromaDB is not installed. "
@@ -111,9 +115,13 @@ class ChromaMemoryStore(MemoryStore):
         host, port = parsed.rsplit(":", 1) if ":" in parsed else (parsed, "8000")
 
         self._client = HttpClient(host=host, port=int(port))
+        self._embedding_dim = embedding_dim()
         for name in self._COLLECTIONS:
             col_name = f"{self._collection_prefix}_{name}"
-            self._collections[col_name] = self._client.get_or_create_collection(col_name)
+            self._collections[col_name] = self._client.get_or_create_collection(
+                col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
 
     async def close(self) -> None:
         """Release the ChromaDB HTTP connection (best-effort)."""
@@ -155,10 +163,11 @@ class ChromaMemoryStore(MemoryStore):
             "metadata": None,
         })
         collection = self._col("semantic")
+        embedding = generate_embedding(content)
 
         await self._thread(
             lambda: collection.add(
-                documents=[content],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[fact_id],
             )
@@ -212,7 +221,7 @@ class ChromaMemoryStore(MemoryStore):
 
         await self._thread(
             lambda: collection.add(
-                documents=[new_content],
+                embeddings=[generate_embedding(new_content)],
                 metadatas=[metadata],
                 ids=[fact_id],
             )
@@ -233,10 +242,11 @@ class ChromaMemoryStore(MemoryStore):
         empty strings.
         """
         collection = self._col("semantic")
+        query_embedding = generate_embedding(query)
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=min(limit, 1000),
+                query_embeddings=[query_embedding],
             )
         )
 
@@ -272,32 +282,63 @@ class ChromaMemoryStore(MemoryStore):
 
     async def semantic_similarity_search(
         self, query: str, limit: int = 5, distance_threshold: float = 0.3
-    ) -> bool:
-        """Check if any fact is semantically similar to *query*.
+    ) -> list[dict]:
+        """Find facts semantically similar to *query*.
 
-        ChromaDB returns distances in its query response — cosine
-        distance where 0 = identical, 2 = opposite.  If any returned
-        distance is <= threshold, the fact is a near-duplicate.
-        Lower distance = more similar. Threshold 0.3 means
-        "anything with cosine distance <= 0.3 is considered duplicate".
+        Returns a list of matching fact dicts (empty list if none), sorted
+        by cosine distance ascending.  Each dict contains ``fact_id``,
+        ``content``, ``distance`` (cosine), and other fields.
+        Results are filtered to only include facts with distance <= threshold.
         """
         collection = self._col("semantic")
+        query_embedding = generate_embedding(query)
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=limit,
+                query_embeddings=[query_embedding],
                 include=["distances"],
             )
         )
 
+        ids = result.get("ids", [])
         distances = result.get("distances", [])
-        if not distances or not distances[0]:
-            return False
+        documents = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
 
-        # Chroma default is cosine distance: 0 = identical, 2 = opposite
-        # Lower distance = more similar.  Threshold 0.3 means
-        # "anything with cosine distance <= 0.3 is considered duplicate"
-        return any(d <= distance_threshold for d in distances[0])
+        if not ids or not ids[0]:
+            return []
+
+        records: list[dict] = []
+        for i in range(len(ids[0])):
+            dist = distances[0][i] if distances and distances[0] else 1.0
+            if dist > distance_threshold:
+                continue  # filter by threshold
+
+            doc = (
+                documents[0][i]
+                if documents and documents[0][i] is not None
+                else ""
+            )
+            meta = (
+                metadatas[0][i]
+                if metadatas and metadatas[0][i]
+                else {}
+            )
+
+            records.append({
+                "fact_id": ids[0][i],
+                "content": doc,
+                "category": meta.get("category", "general"),
+                "confidence": float(meta.get("confidence", 0.0)),
+                "source": meta.get("source", "unknown"),
+                "source_id": meta.get("source_id"),
+                "created_at": meta.get("created_at", ""),
+                "updated_at": meta.get("updated_at", ""),
+                "metadata": meta.get("metadata"),
+                "distance": dist,
+            })
+
+        return records
 
     # ── Episodic operations ──────────────────────────────────────
 
@@ -325,9 +366,10 @@ class ChromaMemoryStore(MemoryStore):
         })
 
         collection = self._col("episodic")
+        embedding = generate_embedding(summary) if summary else [0.0] * 384
         await self._thread(
             lambda: collection.add(
-                documents=[summary],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[event_id],
             )
@@ -352,11 +394,12 @@ class ChromaMemoryStore(MemoryStore):
         results: dict[str, list] = {}
 
         if query:
-            # Text search first, then filter
+            # Vector search with explicit embeddings, then filter
+            query_embedding = generate_embedding(query)
             query_result = await self._thread(
                 lambda: collection.query(
-                    query_texts=[query],
                     n_results=min(limit * 5, 1000),
+                    query_embeddings=[query_embedding],
                 )
             )
             ids = (
@@ -528,10 +571,11 @@ class ChromaMemoryStore(MemoryStore):
 
         collection = self._col("procedure")
         search_text = f"{name} {description}".strip()
+        embedding = generate_embedding(search_text)
 
         await self._thread(
             lambda: collection.upsert(
-                documents=[search_text],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[procedure_id],
             )
@@ -562,11 +606,12 @@ class ChromaMemoryStore(MemoryStore):
     ) -> list[dict]:
         """Search procedures by vector similarity on name + description."""
         collection = self._col("procedure")
+        query_embedding = generate_embedding(query)
 
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=100,
+                query_embeddings=[query_embedding],
             )
         )
 

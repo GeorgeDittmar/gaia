@@ -12,14 +12,15 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai_harness import TieredCompaction
 
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
@@ -45,7 +46,7 @@ logger = logging.getLogger("gaia.extract")
 _USER_SUMMARY_PATH = SETTINGS_DIR / "user_summary.md"
 
 
-from gaia.core.memory.file_store import _build_frontmatter, _parse_frontmatter
+from gaia.core.memory.frontmatter import build_frontmatter, parse_frontmatter
 
 
 def _generate_conversation_id() -> str:
@@ -105,7 +106,6 @@ class PlannerResult(BaseModel):
         ),
     )
 
-
 # ── Extraction agent (reusable, structured output) ─────────────────
 
 class Gaia:
@@ -158,6 +158,7 @@ class Gaia:
         self.__planner_agent = self._make_planner_agent()
         self.__user_summary = self._load_user_summary()
         self.__last_summary_time: datetime | None = None
+        self.__last_extracted_timestamp: str | None = None  # oldest processed event timestamp
         full_instructions = self._system_prompt
         if self.__user_summary:
             full_instructions = (
@@ -168,7 +169,26 @@ class Gaia:
                 + "\n\n"
                 + self._system_prompt
             )
-        self.__core_agent = Agent(model, instructions=full_instructions)
+        self.__core_agent = self._make_core_agent(model, system_prompt)
+
+    def _make_core_agent(self, model, system_prompt:str) -> Agent[str]:
+
+        agent = Agent(model)
+
+        @agent.system_prompt
+        def _create_system_prompt() -> str:
+            prompt = (
+                self._system_prompt + "\n\n"
+                "### User Dosier / Summary:"
+                "Below is a profile of the user, built from previous conversations.\n"
+                "Use this to personalize your responses and maintain context.\n\n"
+                + self.__user_summary
+                + "\n\n"
+            )
+            return prompt
+
+        
+        return agent
 
     def _make_planner_agent(self) -> Agent[PlannerResult]:
         """Build a lightweight planning agent with structured output.
@@ -320,7 +340,7 @@ class Gaia:
         try:
             if _USER_SUMMARY_PATH.exists():
                 content = _USER_SUMMARY_PATH.read_text(encoding="utf-8")
-                _, body = _parse_frontmatter(content)
+                _, body = parse_frontmatter(content)
                 return body.strip()
         except Exception:
             logger.exception("failed to load user summary")
@@ -339,7 +359,7 @@ class Gaia:
                 "facts_count": str(facts_count),
                 "conversation_count": str(conversation_count),
             }
-            frontmatter = _build_frontmatter(metadata)
+            frontmatter = build_frontmatter(metadata)
             _USER_SUMMARY_PATH.write_text(
                 frontmatter + text, encoding="utf-8"
             )
@@ -416,11 +436,16 @@ class Gaia:
         if self._memory is None:
             return ""
 
-        # Gather episodic data — recent planner notes
+        now = datetime.now(timezone.utc)
+        day_ago = (now - timedelta(days=1)).isoformat()
+        week_ago = (now - timedelta(days=7)).isoformat()
+
+        # Gather episodic data — recent planner notes (last 24h)
         planner_notes: list[str] = []
         try:
             notes_results = await self._memory.episodic_search(
-                query="planner note observation",
+                event_types=["planner_note"],
+                time_range=(day_ago, now.isoformat()),
                 limit=20,
             )
             for note in notes_results:
@@ -450,13 +475,12 @@ class Gaia:
         except Exception:
             logger.exception("failed to query semantic facts")
 
-        # Gather recent episodic events — raw conversation turns
-        # This is the fallback when planner notes / extracted facts are empty
+        # Gather recent episodic events — raw conversation turns (last 24h)
         episodic_events: list[str] = []
         try:
             events = await self._memory.episodic_search(
-                query="conversation turn",
                 event_types=["conversation_turn"],
+                time_range=(day_ago, now.isoformat()),
                 limit=30,
             )
             for evt in events:
@@ -543,6 +567,8 @@ class Gaia:
         # 1. Planner — decide whether to retrieve from memory
         context_blocks: list[str] = []
         planner_note: str = ""
+        now = datetime.now(timezone.utc)
+        day_ago = (now - timedelta(days=1)).isoformat()
         if self._memory is not None and self.__message_hist:
             try:
                 recent = self.__message_hist[-10:]
@@ -571,7 +597,12 @@ class Gaia:
                                     context_blocks.append(f"[fact] {content}")
 
                         if source in ("episodic", "both"):
-                            events = await self._memory.episodic_search(query, limit=5)
+                            events = await self._memory.episodic_search(
+                                query=query,
+                                event_types=["conversation_turn"],
+                                time_range=(day_ago, now.isoformat()),
+                                limit=5,
+                            )
                             for evt in events:
                                 payload_raw = evt.get("payload", "{}")
                                 if isinstance(payload_raw, str):
@@ -739,7 +770,7 @@ class Gaia:
                     fact_text,
                     limit=5,
                     distance_threshold=0.75,
-                ):
+                ):  # non-empty list → truthy = duplicate found
                     skipped += 1
                     logger.info("skipping duplicate — %s", fact_text[:60])
                     continue
@@ -884,30 +915,58 @@ class Gaia:
 
         return None
 
-    async def extract_from_history(self, max_turns: int = 10) -> int:
-        """Re-process the last N conversation turns from episodic memory.
+    async def extract_from_history(
+        self,
+        max_turns: int = 10,
+        *,
+        all_turns: bool = False,
+    ) -> int:
+        """Re-process conversation turns from episodic memory.
 
-        Queries episodic memory for the most recent turns, extracts facts from
-        user_prompt + agent_response pairs, and saves them.
+        Queries episodic memory for ``conversation_turn`` entries, extracts
+        facts from user_prompt + agent_response pairs, and saves them.
+
+        When *all_turns* is False (default), only processes entries newer
+        than the last extraction run — already-extracted turns are skipped.
+        When *all_turns* is True, processes all available entries (e.g.
+        for ``/extract`` to catch up on old data).
 
         Args:
             max_turns: Maximum number of conversation turns to process.
+            all_turns: If True, process all entries regardless of last cutoff.
 
         Returns:
             Total number of facts saved across all processed turns.
         """
         if self._memory is None:
+            logger.warning("extract_from_history: memory store is None")
             return 0
+
+        # Determine the cutoff timestamp for filtering
+        if all_turns:
+            cutoff: str | None = None  # process all
+        else:
+            cutoff = getattr(self, "_Gaia__last_extracted_timestamp", None)
 
         try:
             results = await self._memory.episodic_search(
-                query="conversation turn",
+                event_types=["conversation_turn"],
+                time_range=(cutoff, datetime.now(timezone.utc).isoformat()) if cutoff else None,
                 limit=max_turns,
             )
         except Exception:
+            logger.exception("extract_from_history: episodic_search failed")
             return 0
 
+        if not results:
+            logger.warning("extract_from_history: no new turns to extract")
+            return 0
+
+        logger.info("extract_from_history: found %d unprocessed turns", len(results))
+
         total_saved = 0
+        total_skipped = 0
+        oldest_ts = cutoff  # track the oldest timestamp seen
         for entry in results:
             raw_payload = entry.get("payload", {})
             if isinstance(raw_payload, str):
@@ -920,7 +979,20 @@ class Gaia:
             user_prompt = payload.get("user_prompt", "")
             agent_response = payload.get("agent_response", "")
             if user_prompt and agent_response:
+                logger.info("extract_from_history: processing turn — prompt=%s …", user_prompt[:80])
                 saved = await self.post_turn_extract(user_prompt, agent_response)
                 total_saved += saved
+            else:
+                total_skipped += 1
+                logger.warning("extract_from_history: entry has no payload, skipping")
+            # Track oldest timestamp among processed entries
+            ts = entry.get("timestamp", "")
+            if ts and (oldest_ts is None or ts < oldest_ts):
+                oldest_ts = ts
 
+        # Save cutoff so next run skips these entries
+        self.__last_extracted_timestamp = oldest_ts or cutoff
+
+        logger.info("extract_from_history: done — saved=%d skipped=%d total_entries=%d",
+                     total_saved, total_skipped, len(results))
         return total_saved
