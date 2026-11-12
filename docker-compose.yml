@@ -1,8 +1,9 @@
-# docker-compose.yml — G.A.I.A. application with ChromaDB memory service
+# docker-compose.yml — G.A.I.A. application with memory and LLM services
 #
 # Services:
-#   gaia      — The TUI application (connects to ChromaDB + LLM endpoint)
-#   chroma    — ChromaDB vector store (semantic + episodic memory)
+#   gaia      — The TUI application
+#   postgres  — PostgreSQL + pgvector (semantic + episodic memory)
+#   chroma    — ChromaDB vector store (alternative memory backend)
 #   llama     — (optional) Ollama for the LLM backend
 #
 # Usage:
@@ -11,11 +12,25 @@
 #   docker compose logs -f gaia       # follow Gaia's output
 #
 # Memory backend is selected in settings.json:
-#   "memory": { "backend": "chroma" }
-# Gaia resolves "chroma" via the "chroma" service name on the Docker network.
+#   "memory": { "backend": "postgres" }  — PostgreSQL (default in compose)
+#   "memory": { "backend": "chroma" }    — ChromaDB
+# Gaia resolves services via Docker internal DNS (service name = host).
 
 services:
-  # ── ChromaDB — vector memory store ──────────────────────────────
+  # ── PostgreSQL + pgvector — unified memory store ────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: gaia
+      POSTGRES_PASSWORD: gaia
+      POSTGRES_DB: gaia
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  # ── ChromaDB — alternative vector memory store ──────────────────
   chroma:
     build:
       context: .
@@ -25,8 +40,6 @@ services:
       - "8000:8000"
     volumes:
       - chroma-data:/chroma/chroma
-    # Expose as "chroma" on the compose network (Gaia connects here)
-    # Environment can be set for embedding models, auth, etc.
 
   # ── G.A.I.A. TUI application ────────────────────────────────────
   gaia:
@@ -34,16 +47,23 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    # Connect to ChromaDB via compose network service name
+    depends_on:
+      - postgres
+      - chroma
     environment:
       - LLM_ENDPOINT=${LLM_ENDPOINT:-http://host.docker.internal:11434}
+      # PostgreSQL memory backend (service-name resolved on Docker network)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=gaia
+      - POSTGRES_PASSWORD=gaia
+      - POSTGRES_DB=gaia
+      # ChromaDB (for chroma backend)
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
       - GAIA_HOME=/home/gaia/data
     volumes:
-      # Persist Gaia settings, memory DB, logs outside the container
       - gaia-data:/home/gaia/data
-    # Give terminal dimensions so Textual layout matches host
     stdin_open: true
     tty: true
 
@@ -61,6 +81,8 @@ services:
   # Then set: LLM_ENDPOINT=http://llama:11434
 
 volumes:
+  pg-data:
+    driver: local
   chroma-data:
     driver: local
   gaia-data:

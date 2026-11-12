@@ -109,7 +109,12 @@ class TestAinteractRetrievalBranching:
         tokens = [t async for t in gaia.ainteract(prompt="hello")]
         assert len(tokens) == 1
 
-        gaia._memory.episodic_search.assert_awaited_once_with("test query", limit=5)
+        gaia._memory.episodic_search.assert_awaited_once()
+        call_kwargs = gaia._memory.episodic_search.call_args.kwargs
+        assert call_kwargs["query"] == "test query"
+        assert call_kwargs["event_types"] == ["conversation_turn"]
+        assert call_kwargs["limit"] == 5
+        assert "time_range" in call_kwargs
         gaia._memory.semantic_search.assert_not_awaited()
 
     async def test_both_sources(
@@ -129,7 +134,12 @@ class TestAinteractRetrievalBranching:
         assert len(tokens) == 1
 
         gaia._memory.semantic_search.assert_awaited_once_with("test query", limit=3)
-        gaia._memory.episodic_search.assert_awaited_once_with("test query", limit=5)
+        gaia._memory.episodic_search.assert_awaited_once()
+        call_kwargs = gaia._memory.episodic_search.call_args.kwargs
+        assert call_kwargs["query"] == "test query"
+        assert call_kwargs["event_types"] == ["conversation_turn"]
+        assert call_kwargs["limit"] == 5
+        assert "time_range" in call_kwargs
 
     async def test_no_retrieve_calls_no_searches(
         self, _gaia_with_memory

@@ -307,7 +307,7 @@ class GaiaTUIApp(App):
 
         # Load AGENT.md as the canonical system prompt, then merge over
         # settings.json so the settings modal shows the actual prompt.
-        agent_md = ""
+        agent_md = None
         try:
             agent_md = Path("AGENT.md").read_text(encoding="utf-8")
         except Exception:
@@ -324,7 +324,7 @@ class GaiaTUIApp(App):
             logger.exception("memory factory failed — memory disabled")
             self._memory = None
         self.__core_agent = Gaia(
-            system_prompt=self.settings.system_prompt,
+            system_prompt= agent_md if agent_md else self.settings.system_prompt, #use simple default prompt if core agent.md file not found or currpt
             model_name=self.settings.model,
             endpoint=self.settings.endpoint,
             memory=self._memory,
@@ -386,7 +386,7 @@ class GaiaTUIApp(App):
     @property
     def core_agent(self) -> Gaia:
         """Return the Gaia agent instance."""
-        return self._GaiaTUIApp__core_agent
+        return self.__core_agent
 
     # ── Fact extraction scheduling ─────────────────────────────────
 
@@ -406,7 +406,7 @@ class GaiaTUIApp(App):
         if self._memory is None:
             return
         try:
-            count = await self._GaiaTUIApp__core_agent.extract_from_history(
+            count = await self.__core_agent.extract_from_history(
                 max_turns=10,
             )
             if count > 0:
@@ -444,11 +444,11 @@ class GaiaTUIApp(App):
         if self._memory is None:
             return
         try:
-            last_time = self._GaiaTUIApp__core_agent._Gaia__last_summary_time
+            last_time = self.__core_agent.__last_summary_time
             if last_time is None or (
                 datetime.now() - last_time
             ).total_seconds() > self._SUMMARIZE_MIN_AGE_MINUTES * 60:
-                summary = await self._GaiaTUIApp__core_agent.generate_user_summary()
+                summary = await self.__core_agent.generate_user_summary()
                 if summary:
                     logger.info(
                         "background summary refreshed (%d chars)", len(summary)
@@ -590,6 +590,26 @@ class GaiaTUIApp(App):
         except Exception:
             logger.exception("memory initialization failed — memory disabled")
             self._memory = None
+            # Show a visible error in the chat
+            self.call_after_refresh(self._show_memory_error)
+
+    def _show_memory_error(self) -> None:
+        """Display a chat message explaining the memory failure."""
+        try:
+            chat_box = self.query_one("#chat-container", ScrollableContainer)
+            chat_box.mount(
+                ChatTurn(
+                    "[bold #ff007f]⚠ Memory Unavailable:[/bold #ff007f] "
+                    "Could not connect to ChromaDB.\n"
+                    "  • Make sure ChromaDB is running (default: http://localhost:8000)\n"
+                    "  • Check the session log in ~/.gaia/logs/ for details\n"
+                    "  • Start with: [bold]docker run -d -p 8000:8000 chromadb/chroma[/bold]",
+                    classes="agent-msg",
+                )
+            )
+            chat_box.scroll_end()
+        except Exception:
+            pass
 
     def _mount_autocomplete_popup(self) -> None:
         """Create and mount the autocomplete popup into the input container.

@@ -24,6 +24,11 @@ dev = [
 memory = [
     "chromadb>=1.5.9",
 ]
+postgres = [
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    "sentence-transformers>=4.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
