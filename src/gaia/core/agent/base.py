@@ -12,18 +12,20 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai_harness import TieredCompaction
 
 if TYPE_CHECKING:
     from gaia.core.memory.base import MemoryStore
 
+from gaia.config import SETTINGS_DIR
 from gaia.core.context import ContextWindow, _DEFAULT_MAX_TOKENS, _DEFAULT_MIN_AGE_TURNS
 
 # Auto-classification keywords for extracted facts
@@ -41,37 +43,10 @@ _PROJECT_KEYWORDS = frozenset([
 
 logger = logging.getLogger("gaia.extract")
 
-_USER_SUMMARY_PATH = Path.home() / ".gaia" / "user_summary.md"
+_USER_SUMMARY_PATH = SETTINGS_DIR / "user_summary.md"
 
 
-def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Split markdown text into frontmatter dict and body.
-
-    Returns (metadata_dict, body_string). If no frontmatter found,
-    returns ({}, full_text).
-    """
-    body = text
-    metadata: dict[str, str] = {}
-
-    if text.startswith("---"):
-        end_marker = text.find("---", 3)
-        if end_marker != -1:
-            fm_lines = text[3:end_marker].strip().splitlines()
-            for line in fm_lines:
-                if ":" in line:
-                    key, _, value = line.partition(":")
-                    metadata[key.strip()] = value.strip().strip('"')
-            body = text[end_marker + 3:].lstrip("\n")
-
-    return metadata, body
-
-
-def _build_frontmatter(metadata: dict[str, str]) -> str:
-    """Build a YAML frontmatter block surrounded by --- markers."""
-    lines = []
-    for key, value in metadata.items():
-        lines.append(f"{key}: {value}")
-    return "---\n" + "\n".join(lines) + "\n---"
+from gaia.core.memory.frontmatter import build_frontmatter, parse_frontmatter
 
 
 def _generate_conversation_id() -> str:
@@ -131,7 +106,6 @@ class PlannerResult(BaseModel):
         ),
     )
 
-
 # ── Extraction agent (reusable, structured output) ─────────────────
 
 class Gaia:
@@ -184,6 +158,7 @@ class Gaia:
         self.__planner_agent = self._make_planner_agent()
         self.__user_summary = self._load_user_summary()
         self.__last_summary_time: datetime | None = None
+        self.__last_extracted_timestamp: str | None = None  # oldest processed event timestamp
         full_instructions = self._system_prompt
         if self.__user_summary:
             full_instructions = (
@@ -194,7 +169,26 @@ class Gaia:
                 + "\n\n"
                 + self._system_prompt
             )
-        self.__core_agent = Agent(model, instructions=full_instructions)
+        self.__core_agent = self._make_core_agent(model, system_prompt)
+
+    def _make_core_agent(self, model, system_prompt:str) -> Agent[str]:
+
+        agent = Agent(model)
+
+        @agent.system_prompt
+        def _create_system_prompt() -> str:
+            prompt = (
+                self._system_prompt + "\n\n"
+                "### User Dosier / Summary:"
+                "Below is a profile of the user, built from previous conversations.\n"
+                "Use this to personalize your responses and maintain context.\n\n"
+                + self.__user_summary
+                + "\n\n"
+            )
+            return prompt
+
+        
+        return agent
 
     def _make_planner_agent(self) -> Agent[PlannerResult]:
         """Build a lightweight planning agent with structured output.
@@ -281,22 +275,35 @@ class Gaia:
         return Agent(
             model,
             instructions=(
-                "You are a memory synthesis assistant. Given extracted facts "
-                "and planner observations, produce a concise, well-structured "
-                "user summary in markdown.\n\n"
-                "Produce a structured user summary in markdown with these sections:\n\n"
-                "# User Summary\n\n"
-                "## Identity\n"
-                "- **Name:** <name or \"(unknown)\">\n"
-                "- **Location:** <location or \"(unknown)\">\n\n"
-                "## Preferences\n"
-                "- <each preference as a bullet>\n\n"
-                "## Active Projects\n"
-                "- <each project as a bullet>\n\n"
-                "## Context\n"
-                "- <recent interaction context>\n\n"
+                "You are a memory synthesis assistant. Given extracted facts, "
+                "planner notes, and recent conversation excerpts, produce a "
+                "concise, well-structured user summary in markdown.\n\n"
+                "Use the following section structure as a guide, but adapt to "
+                "what data is actually available. Only include sections that "
+                "have content — omit empty ones.\n\n"
+                "  # User Summary\n\n"
+                "  ## Identity (if known)\n"
+                "  - Name, location, role, etc.\n\n"
+                "  ## Preferences\n"
+                "  - Things the user likes, dislikes, or has stated as "
+                "important\n\n"
+                "  ## Active Projects\n"
+                "  - Ongoing work, tech stack, current challenges\n\n"
+                "  ## Context\n"
+                "  - Recent conversation topics, decisions made, open questions\n\n"
+                "Rules:\n"
+                "  - Be concise — this is a quick-reference summary\n"
+                "  - Use bullet points where appropriate\n"
+                "  - Only include facts from the provided data, do not invent\n"
+                "    information\n"
+                "  - If an existing summary was provided, update it with new "
+                "information rather than starting over\n"
+                "  - If no data is available, return just the header:\n"
+                "    # User Summary\n\n"
+                "    No data yet.\n"
                 "---\n"
-                "*Auto-generated by G.A.I.A. — updated periodically as new information is learned.*"
+                f"*Auto-generated by G.A.I.A. — updated periodically as new information is learned.*\n"
+                f"Summary Data as of {datetime.now().isoformat()}"
             ),
         )
 
@@ -333,7 +340,7 @@ class Gaia:
         try:
             if _USER_SUMMARY_PATH.exists():
                 content = _USER_SUMMARY_PATH.read_text(encoding="utf-8")
-                _, body = _parse_frontmatter(content)
+                _, body = parse_frontmatter(content)
                 return body.strip()
         except Exception:
             logger.exception("failed to load user summary")
@@ -352,7 +359,7 @@ class Gaia:
                 "facts_count": str(facts_count),
                 "conversation_count": str(conversation_count),
             }
-            frontmatter = _build_frontmatter(metadata)
+            frontmatter = build_frontmatter(metadata)
             _USER_SUMMARY_PATH.write_text(
                 frontmatter + text, encoding="utf-8"
             )
@@ -429,11 +436,16 @@ class Gaia:
         if self._memory is None:
             return ""
 
-        # Gather episodic data — recent planner notes
+        now = datetime.now(timezone.utc)
+        day_ago = (now - timedelta(days=1)).isoformat()
+        week_ago = (now - timedelta(days=7)).isoformat()
+
+        # Gather episodic data — recent planner notes (last 24h)
         planner_notes: list[str] = []
         try:
             notes_results = await self._memory.episodic_search(
-                query="planner note observation",
+                event_types=["planner_note"],
+                time_range=(day_ago, now.isoformat()),
                 limit=20,
             )
             for note in notes_results:
@@ -463,13 +475,12 @@ class Gaia:
         except Exception:
             logger.exception("failed to query semantic facts")
 
-        # Gather recent episodic events — raw conversation turns
-        # This is the fallback when planner notes / extracted facts are empty
+        # Gather recent episodic events — raw conversation turns (last 24h)
         episodic_events: list[str] = []
         try:
             events = await self._memory.episodic_search(
-                query="conversation turn",
                 event_types=["conversation_turn"],
+                time_range=(day_ago, now.isoformat()),
                 limit=30,
             )
             for evt in events:
@@ -510,7 +521,7 @@ class Gaia:
         input_text = "\n".join(input_parts)
 
         # Pass existing summary for incremental update
-        if hasattr(self, "_Gaia__user_summary") and self._Gaia__user_summary:
+        if self.__user_summary:
             input_text += (
                 "\n\nEXISTING SUMMARY (update, don't start from scratch):\n"
                 + self.__user_summary
@@ -556,6 +567,8 @@ class Gaia:
         # 1. Planner — decide whether to retrieve from memory
         context_blocks: list[str] = []
         planner_note: str = ""
+        now = datetime.now(timezone.utc)
+        day_ago = (now - timedelta(days=1)).isoformat()
         if self._memory is not None and self.__message_hist:
             try:
                 recent = self.__message_hist[-10:]
@@ -584,7 +597,12 @@ class Gaia:
                                     context_blocks.append(f"[fact] {content}")
 
                         if source in ("episodic", "both"):
-                            events = await self._memory.episodic_search(query, limit=5)
+                            events = await self._memory.episodic_search(
+                                query=query,
+                                event_types=["conversation_turn"],
+                                time_range=(day_ago, now.isoformat()),
+                                limit=5,
+                            )
                             for evt in events:
                                 payload_raw = evt.get("payload", "{}")
                                 if isinstance(payload_raw, str):
@@ -746,12 +764,23 @@ class Gaia:
             saved = 0
             skipped = 0
             for fact_text, category, confidence in facts:
-                # Check for potential conflicts first
+                # Dedup check first: skip if an identical or nearly
+                # identical fact already exists.
+                if await self._memory.semantic_similarity_search(
+                    fact_text,
+                    limit=5,
+                    distance_threshold=0.75,
+                ):  # non-empty list → truthy = duplicate found
+                    skipped += 1
+                    logger.info("skipping duplicate — %s", fact_text[:60])
+                    continue
+
+                # Check for potential conflicts: new fact may contradict
+                # an existing one on the same topic.
                 conflict = await self._detect_facts_conflict(fact_text)
 
                 if conflict is not None:
-                    # New fact contradicts an existing one — save both with
-                    # lower confidence to mark the uncertainty.
+                    # Save both with lower confidence to mark uncertainty.
                     await self._memory.semantic_insert(
                         content=f"[CONFLICT] {fact_text}",
                         category=category,
@@ -764,16 +793,6 @@ class Gaia:
                         "saved CONFLICTING fact [%s] %s (conflict with %s)",
                         category, fact_text[:80], conflict.get("fact_id", "?"),
                     )
-                    continue
-
-                # Dedup check: query memory for similar facts
-                if await self._memory.semantic_similarity_search(
-                    fact_text,
-                    limit=5,
-                    distance_threshold=0.75,
-                ):
-                    skipped += 1
-                    logger.info("skipping duplicate — %s", fact_text[:60])
                     continue
 
                 try:
@@ -862,6 +881,7 @@ class Gaia:
             results = await self._memory.semantic_search(
                 " ".join(list(new_tokens)[:10]),
                 limit=5,
+                distance_threshold=0.75,
             )
         except Exception:
             return None
@@ -895,30 +915,58 @@ class Gaia:
 
         return None
 
-    async def extract_from_history(self, max_turns: int = 10) -> int:
-        """Re-process the last N conversation turns from episodic memory.
+    async def extract_from_history(
+        self,
+        max_turns: int = 10,
+        *,
+        all_turns: bool = False,
+    ) -> int:
+        """Re-process conversation turns from episodic memory.
 
-        Queries episodic memory for the most recent turns, extracts facts from
-        user_prompt + agent_response pairs, and saves them.
+        Queries episodic memory for ``conversation_turn`` entries, extracts
+        facts from user_prompt + agent_response pairs, and saves them.
+
+        When *all_turns* is False (default), only processes entries newer
+        than the last extraction run — already-extracted turns are skipped.
+        When *all_turns* is True, processes all available entries (e.g.
+        for ``/extract`` to catch up on old data).
 
         Args:
             max_turns: Maximum number of conversation turns to process.
+            all_turns: If True, process all entries regardless of last cutoff.
 
         Returns:
             Total number of facts saved across all processed turns.
         """
         if self._memory is None:
+            logger.warning("extract_from_history: memory store is None")
             return 0
+
+        # Determine the cutoff timestamp for filtering
+        if all_turns:
+            cutoff: str | None = None  # process all
+        else:
+            cutoff = getattr(self, "_Gaia__last_extracted_timestamp", None)
 
         try:
             results = await self._memory.episodic_search(
-                query="conversation turn",
+                event_types=["conversation_turn"],
+                time_range=(cutoff, datetime.now(timezone.utc).isoformat()) if cutoff else None,
                 limit=max_turns,
             )
         except Exception:
+            logger.exception("extract_from_history: episodic_search failed")
             return 0
 
+        if not results:
+            logger.warning("extract_from_history: no new turns to extract")
+            return 0
+
+        logger.info("extract_from_history: found %d unprocessed turns", len(results))
+
         total_saved = 0
+        total_skipped = 0
+        oldest_ts = cutoff  # track the oldest timestamp seen
         for entry in results:
             raw_payload = entry.get("payload", {})
             if isinstance(raw_payload, str):
@@ -931,7 +979,20 @@ class Gaia:
             user_prompt = payload.get("user_prompt", "")
             agent_response = payload.get("agent_response", "")
             if user_prompt and agent_response:
+                logger.info("extract_from_history: processing turn — prompt=%s …", user_prompt[:80])
                 saved = await self.post_turn_extract(user_prompt, agent_response)
                 total_saved += saved
+            else:
+                total_skipped += 1
+                logger.warning("extract_from_history: entry has no payload, skipping")
+            # Track oldest timestamp among processed entries
+            ts = entry.get("timestamp", "")
+            if ts and (oldest_ts is None or ts < oldest_ts):
+                oldest_ts = ts
 
+        # Save cutoff so next run skips these entries
+        self.__last_extracted_timestamp = oldest_ts or cutoff
+
+        logger.info("extract_from_history: done — saved=%d skipped=%d total_entries=%d",
+                     total_saved, total_skipped, len(results))
         return total_saved

@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# gaia-docker — lightweight wrapper to run G.A.I.A. inside a container.
+#
+# Auto-detects Docker or Podman. Works identically with either.
+#
+# Two modes:
+#   1. Single-container (default) — Gaia only, connects to external services
+#   2. Compose — Gaia + ChromaDB (and optional Ollama) in one stack
+#
+# Install system-wide:
+#   sudo cp scripts/gaia-docker /usr/local/bin/gaia
+#   sudo chmod +x /usr/local/bin/gaia
+#
+# Then run:
+#   gaia                           # single-container mode
+#   gaia --compose                 # multi-container (Gaia + ChromaDB)
+#   gaia --compose --ollama        # + Ollama LLM
+#   gaia --endpoint http://...     # override LLM endpoint for single mode
+#   gaia --home /custom/path       # override data directory
+#   gaia --build                   # rebuild image before running
+
+set -euo pipefail
+
+# Resolve the repository root (parent of the scripts/ directory)
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── Detect container runtime ───────────────────────────────────────
+# CONTAINER_RUNTIME env var overrides auto-detection (e.g. CONTAINER_RUNTIME=docker)
+case "${CONTAINER_RUNTIME:-auto}" in
+    podman)
+        RUNTIME=podman ;;
+    docker)
+        RUNTIME=docker ;;
+    *)
+        if command -v podman &>/dev/null && podman info &>/dev/null 2>&1; then
+            RUNTIME=podman
+        elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            RUNTIME=docker
+        else
+            echo "Error: neither Docker nor Podman is available." >&2
+            exit 1
+        fi ;;
+esac
+
+# Podman defaults
+IMAGE="docker.io/library/gaia:latest"
+HOSTNAME="host.containers.internal"
+NETWORK="host"   # podman works well with --network=host
+RUN_ARGS=""      # extra args for the runtime command
+
+# Docker adjustments
+if [[ "$RUNTIME" == "docker" ]]; then
+    IMAGE="gaia:latest"
+    HOSTNAME="host.docker.internal"
+    RUN_ARGS="--add-host=host.docker.internal:host-gateway"
+fi
+
+# Allow user override via CONTAINER_RUNTIME env var
+GAIA_HOME="${GAIA_HOME:-$HOME/.gaia}"
+LLM_ENDPOINT="${LLM_ENDPOINT:-http://${HOSTNAME}:11434}"
+TTY_OPTS="-it --rm"
+
+# ── Help / usage ───────────────────────────────────────────────────
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Run G.A.I.A. terminal UI inside a container.
+Detected runtime: $RUNTIME
+
+Mode:
+  --compose           Run with docker-compose (Gaia + ChromaDB, optional Ollama)
+  --compose --ollama  Also start Ollama as the LLM backend
+
+Single-container options:
+  --endpoint URL    LLM endpoint (default: $LLM_ENDPOINT)
+  --home PATH       Data directory for settings.json & memory DB (default: $GAIA_HOME)
+  --build           Rebuild the container image before running
+  --tag TAG         Use a different image tag (default: $IMAGE)
+
+Compose options:
+  --compose         Uses docker-compose.yml from the repo root
+  --ollama          Uncomment and start the Ollama service in compose
+  --help, -h        Show this help message
+
+Environment variables:
+  GAIA_HOME         Default data directory (overridden by --home)
+  LLM_ENDPOINT      Default LLM endpoint (overridden by --compose: uses compose network)
+  CHROMA_HOST       ChromaDB host (auto-set to "chroma" in compose mode)
+  CONTAINER_RUNTIME Force 'docker' or 'podman' (auto-detected by default)
+
+Networking:
+  Single-container: Gaia connects via $HOSTNAME (Podman: --network=host,
+    Docker: --add-host=host.docker.internal:host-gateway)
+  Compose: services talk via Docker/Podman internal DNS (host = service name)
+
+Examples:
+  $(basename "$0")                          # single-container, external LLM
+  $(basename "$0") --compose                # full stack, external LLM
+  $(basename "$0") --compose --ollama       # full stack with local LLM
+  $(basename "$0") --compose --build        # rebuild images first
+EOF
+    exit 0
+}
+
+# ── Parse arguments ────────────────────────────────────────────────
+REBUILD=false
+COMPOSE=false
+OLLAMA=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --endpoint)
+            LLM_ENDPOINT="$2"; shift 2 ;;
+        --home)
+            GAIA_HOME="$2"; shift 2 ;;
+        --build)
+            REBUILD=true; shift ;;
+        --tag)
+            IMAGE="$2"; shift 2 ;;
+        --compose)
+            COMPOSE=true; shift ;;
+        --ollama)
+            OLLAMA=true; shift ;;
+        --help|-h)
+            usage ;;
+        *)
+            echo "Unknown option: $1" >&2; echo "Run '$(basename "$0") --help' for usage." >&2; exit 1 ;;
+    esac
+done
+
+# ── Compose mode ───────────────────────────────────────────────────
+if $COMPOSE; then
+    COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
+
+    if [[ ! -f "$COMPOSE_FILE" ]]; then
+        echo "Error: $COMPOSE_FILE not found." >&2
+        exit 1
+    fi
+
+    COMPOSE_CMD="$RUNTIME compose"
+    if ! $COMPOSE_CMD --version &>/dev/null 2>&1; then
+        echo "Error: '$COMPOSE_CMD' not available. Install compose plugin or podman-compose." >&2
+        exit 1
+    fi
+
+    # Build volumes if requested
+    COMPOSE_VOLUMES=("--volumes")  # include named volumes (data persistence)
+    if ! $REBUILD; then
+        COMPOSE_VOLUMES=()  # skip -v for faster rebuilds
+    fi
+
+    # Build Ollama service if requested
+    if $OLLAMA; then
+        echo "🔨 Starting full stack: Gaia + ChromaDB + Ollama"
+        # Pass OLLAMA env so the compose file can reference it
+        export LLM_ENDPOINT="http://llama:11434"
+    else
+        echo "🔨 Starting stack: Gaia + ChromaDB (LLM external)"
+    fi
+
+    exec "$COMPOSE_CMD" -f "$COMPOSE_FILE" up -d "${COMPOSE_VOLUMES[@]}"
+fi
+
+# ── Single-container mode ──────────────────────────────────────────
+
+# ── Pre-flight ─────────────────────────────────────────────────────
+"$RUNTIME" info &>/dev/null 2>&1 || {
+    echo "Error: $RUNTIME daemon is not running." >&2
+    exit 1
+}
+
+# ── Create data directory ──────────────────────────────────────────
+mkdir -p "$GAIA_HOME"
+
+# ── Build if requested ─────────────────────────────────────────────
+if $REBUILD || ! "$RUNTIME" image inspect "$IMAGE" &>/dev/null 2>&1; then
+    echo "🔨 Building $IMAGE ..."
+    "$RUNTIME" build -t "$IMAGE" "$REPO_ROOT"
+fi
+
+# ── Terminal dimensions (helps Textual layout) ─────────────────────
+COLS=$(tput cols 2>/dev/null || echo 80)
+ROWS=$(tput lines 2>/dev/null || echo 24)
+
+# ── Run ────────────────────────────────────────────────────────────
+exec "$RUNTIME" run $TTY_OPTS \
+    --network="$NETWORK" \
+    $RUN_ARGS \
+    -w "/home/gaia" \
+    -e LLM_ENDPOINT="$LLM_ENDPOINT" \
+    -e GAIA_HOME="$GAIA_HOME" \
+    -e "COLUMNS=${COLS}" \
+    -e "LINES=${ROWS}" \
+    -v "${GAIA_HOME}:/home/gaia/data" \
+    "$IMAGE" "$@"

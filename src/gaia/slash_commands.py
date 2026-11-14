@@ -11,7 +11,7 @@ from textual.containers import ScrollableContainer
 from textual.widgets import Static
 
 from gaia.config import SETTINGS_FILE, Settings
-from gaia.core.agent.base import _parse_frontmatter
+from gaia.core.memory.frontmatter import parse_frontmatter
 from gaia.settings_modal import SettingsModal
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ def _remove_by_id(container: ScrollableContainer, widget_id: str) -> None:
     argument, so we query by ID and call ``.remove()`` on the match.
     """
     try:
-        widget = container.query_one(f"#{widget_id}", Static)
+        widget = container.query_one(f"#{widget_id}")
         widget.remove()
     except Exception:
         pass  # widget not found — nothing to remove
@@ -223,6 +223,11 @@ class SlashCommandHandler:
                     )
 
             case "status":
+                mem_status = (
+                    "ChromaDB"
+                    if self._app._memory is not None
+                    else "Disabled (not initialized)"
+                )
                 status_info = (
                     "[bold #00f0ff]System Diagnostics:[/bold #00f0ff]\n"
                     f"  • LLM Endpoint Status: "
@@ -232,8 +237,7 @@ class SlashCommandHandler:
                     f"{self._app.settings.endpoint}\n"
                     f"  • System Prompt Length: "
                     f"{len(self._app.settings.system_prompt)} chars\n"
-                    f"  • Vault State: "
-                    f"{'AES-256 (SQLCipher)' if self._app.settings.encrypted else 'Unencrypted Plaintext'}\n"
+                    f"  • Memory Backend: {mem_status}\n"
                     f"  • Config File: {SETTINGS_FILE.resolve()}"
                 )
                 await chat_box.mount(
@@ -275,6 +279,8 @@ class SlashCommandHandler:
                     )
 
             case "extract":
+                # Clean up any leftover status widget from previous runs
+                _remove_by_id(chat_box, "extract-status")
                 if (
                     self._app._memory is not None
                     and self._app.core_agent is not None
@@ -288,20 +294,41 @@ class SlashCommandHandler:
                     )
                     chat_box.scroll_end()
 
-                    count = await (
-                        self._app.core_agent.extract_from_history(
-                            max_turns=10,
+                    try:
+                        count = await (
+                            self._app.core_agent.extract_from_history(
+                                max_turns=40,
+                                all_turns=True,
+                            )
                         )
-                    )
-                    _remove_by_id(chat_box, "extract-status")
-                    await chat_box.mount(
-                        ChatTurn(
-                            f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
-                            f"[bold]{count}[/bold] facts extracted from recent history.",
-                            classes="agent-msg",
-                            id="extract-status",
+                        widget = chat_box.query_one(
+                            "#extract-status", ChatTurn
                         )
-                    )
+                        if count == 0:
+                            widget.update(
+                                f"[bold #ff007f]Extraction complete:[/bold #ff007f] "
+                                f"[bold]0[/bold] new facts.\n"
+                                f"[dim]All facts already in memory (deduped). "
+                                f"Run /memory-stats to see current counts.[/dim]"
+                            )
+                        else:
+                            widget.update(
+                                f"[bold #00f0ff]Extraction complete:[/bold #00f0ff] "
+                                f"[bold]{count}[/bold] new facts saved.\n"
+                                f"[dim](Other facts were skipped — already in memory)[/dim]"
+                            )
+                    except Exception:
+                        logger.exception("extract failed")
+                        try:
+                            widget = chat_box.query_one(
+                                "#extract-status", ChatTurn
+                            )
+                            widget.update(
+                                "[bold #ff007f]Extraction failed — "
+                                "check logs.[/bold #ff007f]"
+                            )
+                        except Exception:
+                            pass
                 else:
                     await chat_box.mount(
                         ChatTurn(
@@ -314,6 +341,7 @@ class SlashCommandHandler:
             case "extract-debug":
                 # Debug mode: do one extraction on the latest turn and show
                 # raw output
+                _remove_by_id(chat_box, "extract-debug-status")
                 if (
                     self._app._memory is not None
                     and self._app.core_agent is not None
@@ -327,58 +355,70 @@ class SlashCommandHandler:
                     )
                     chat_box.scroll_end()
 
-                    # Get the latest turn from episodic memory
-                    results = await self._app._memory.episodic_search(
-                        query="conversation turn", limit=1
-                    )
-                    if results:
-                        latest = results[0]
-                        raw_payload = latest.get("payload", "{}")
-                        if isinstance(raw_payload, str):
-                            try:
-                                payload = json.loads(raw_payload)
-                            except (json.JSONDecodeError, ValueError):
-                                payload = {}
+                    try:
+                        # Get the latest turn from episodic memory
+                        results = await self._app._memory.episodic_search(
+                            event_types=["conversation_turn"], limit=1
+                        )
+                        if results:
+                            latest = results[0]
+                            raw_payload = latest.get("payload", "{}")
+                            if isinstance(raw_payload, str):
+                                try:
+                                    payload = json.loads(raw_payload)
+                                except (json.JSONDecodeError, ValueError):
+                                    payload = {}
+                            else:
+                                payload = raw_payload
+                            user_msg = payload.get("user_prompt", "(none)")
+                            agent_resp = payload.get("agent_response", "(none)")
+                            status_text = (
+                                f"[dim #8b949e]=== DEBUG EXTRACTION ==="
+                                f"[/dim #8b949e]\n"
+                                f"[dim]User: {user_msg[:200]}[/dim]\n"
+                                f"[dim]Agent: "
+                                f"{agent_resp[:200]}[/dim]"
+                            )
+                            # Update widget in-place (no unmount/remount)
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
+                            )
+                            widget.update(status_text)
+                            # Now actually run extraction
+                            count = (
+                                await self._app.core_agent.post_turn_extract(
+                                    user_msg, agent_resp
+                                )
+                            )
+                            # Replace with result
+                            widget.remove()
+                            await chat_box.mount(
+                                ChatTurn(
+                                    f"[bold #00f0ff]Extracted & saved: "
+                                    f"{count} fact(s)[/bold #00f0ff]",
+                                    classes="agent-msg",
+                                )
+                            )
                         else:
-                            payload = raw_payload
-                        user_msg = payload.get("user_prompt", "(none)")
-                        agent_resp = payload.get("agent_response", "(none)")
-                        status_text = (
-                            f"[dim #8b949e]=== DEBUG EXTRACTION ==="
-                            f"[/dim #8b949e]\n"
-                            f"[dim]User: {user_msg[:200]}[/dim]\n"
-                            f"[dim]Agent: "
-                            f"{agent_resp[:200]}[/dim]"
-                        )
-                        _remove_by_id(chat_box, "extract-debug-status")
-                        await chat_box.mount(
-                            ChatTurn(
-                                status_text,
-                                classes="agent-msg",
-                                id="extract-debug-status",
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
                             )
-                        )
-                        # Now actually run extraction
-                        count = (
-                            await self._app.core_agent.post_turn_extract(
-                                user_msg, agent_resp
+                            widget.update(
+                                "[bold #ff007f]No conversation turns "
+                                "found in episodic memory.[/bold #ff007f]"
                             )
-                        )
-                        # Show result
-                        await chat_box.mount(
-                            ChatTurn(
-                                f"[bold #00f0ff]Extracted & saved: {count} fact(s)[/bold #00f0ff]",
-                                classes="agent-msg",
+                    except Exception:
+                        logger.exception("extract-debug failed")
+                        try:
+                            widget = chat_box.query_one(
+                                "#extract-debug-status", ChatTurn
                             )
-                        )
-                    else:
-                        _remove_by_id(chat_box, "extract-debug-status")
-                        await chat_box.mount(
-                            ChatTurn(
-                                "[bold #ff007f]No conversation turns found in episodic memory.[/bold #ff007f]",
-                                classes="agent-msg",
+                            widget.update(
+                                "[bold #ff007f]Extract failed — "
+                                "check logs.[/bold #ff007f]"
                             )
-                        )
+                        except Exception:
+                            pass
                     chat_box.scroll_end()
                 else:
                     await chat_box.mount(
@@ -389,12 +429,63 @@ class SlashCommandHandler:
                         )
                     )
 
+            case "memory-stats":
+                if self._app._memory is None:
+                    await chat_box.mount(
+                        ChatTurn(
+                            "[bold #ff007f]Memory Unavailable:[/bold #ff007f] "
+                            "Memory store is not initialized.",
+                            classes="agent-msg",
+                        )
+                    )
+                else:
+                    try:
+                        # Get all episodic events (no query, no time filter)
+                        all_events = await self._app._memory.episodic_search(
+                            event_types=None,
+                            limit=1000,
+                        )
+                        # Count by event type
+                        type_counts: dict[str, int] = {}
+                        for evt in all_events:
+                            et = evt.get("event_type", "unknown")
+                            type_counts[et] = type_counts.get(et, 0) + 1
+
+                        # Get semantic facts count
+                        semantic_facts = await self._app._memory.semantic_search(
+                            "general", limit=1000
+                        )
+
+                        lines = [
+                            "[bold #00f0ff]Memory Statistics:[/bold #00f0ff]",
+                            f"  • Episodic events: {len(all_events)} total",
+                        ]
+                        for et, count in sorted(type_counts.items()):
+                            lines.append(f"    – {et}: {count}")
+                        lines.append(f"  • Semantic facts: {len(semantic_facts)}")
+
+                        await chat_box.mount(
+                            ChatTurn("\n".join(lines), classes="agent-msg")
+                        )
+                    except Exception:
+                        logger.exception("memory-stats failed")
+                        await chat_box.mount(
+                            ChatTurn(
+                                "[bold #ff007f]Failed to retrieve memory stats.[/bold #ff007f]\n"
+                                "Check that ChromaDB is running and connected.",
+                                classes="agent-msg",
+                            )
+                        )
+
             case "summary":
-                summary_path = Path.home() / ".gaia" / "user_summary.md"
-                if summary_path.exists():
+                try:
+                    from gaia.core.agent.base import _USER_SUMMARY_PATH as summary_path
+                except ImportError:
+                    summary_path = None  # pragma: no cover
+                if summary_path and summary_path.exists():
                     try:
                         raw = summary_path.read_text(encoding="utf-8")
-                        _, content = _parse_frontmatter(raw)
+                        _, content = parse_frontmatter(raw)
                     except OSError:
                         await chat_box.mount(
                             ChatTurn(

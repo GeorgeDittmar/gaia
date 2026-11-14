@@ -132,6 +132,5 @@ graph LR
 
 | Backend | Status | Search | Features |
 |---|---|---|---|
-| **🗃️ SQLiteMemoryStore** | v1 default | FTS5 virtual tables | SQLCipher encryption, ACID, zero external deps |
+| **📁 FileStore** | current default | keyword overlap + FTS5 | Human-editable, git-versionable, zero external deps |
 | **☁️ RedisMemoryStore** | Planned v2 | RediSearch + HNSW vectors | EXPIRE TTL for retention, multi-device sync |
-| **📁 FileStore** | Dev / lightweight | grep/ripgrep fallback | Human-editable, git-versionable, no DB |

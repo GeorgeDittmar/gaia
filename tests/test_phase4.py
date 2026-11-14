@@ -9,47 +9,18 @@ from gaia.config import MemoryConfig, Settings
 from gaia.gaia_tui_app import GaiaTUIApp
 
 
-class TestMemoryFactoryCreatesFileByDefault:
-    """MemoryFactory.create returns FileMemoryStore for 'file' backend."""
+class TestMemoryFactoryCreatesChromaByDefault:
+    """MemoryFactory.create returns ChromaMemoryStore for default backend."""
 
-    def test_creates_file_store_with_default_settings(self):
-        """Default settings produce a FileMemoryStore."""
-        with (
-            patch("gaia.gaia_tui_app.MemoryFactory"),
-        ):
-            from gaia.core.memory.factory import MemoryFactory
-            from gaia.core.memory.file_store import FileMemoryStore
-
-            settings = Settings()  # backend="file" by default
-            store = MemoryFactory.create(settings)
-
-        assert isinstance(store, FileMemoryStore)
-
-    def test_creates_file_store_with_explicit_backend(self):
-        """Explicit backend='file' also produces FileMemoryStore."""
+    def test_creates_chroma_store_with_default_settings(self):
+        """Default settings produce a ChromaMemoryStore."""
         from gaia.core.memory.factory import MemoryFactory
-        from gaia.core.memory.file_store import FileMemoryStore
 
-        settings = Settings(
-            memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory")
-        )
+        settings = Settings()  # backend="chroma" by default
         store = MemoryFactory.create(settings)
 
-        assert isinstance(store, FileMemoryStore)
-
-    def test_file_store_dir_is_resolved(self):
-        """memory_dir is expanded via Path.expanduser()."""
-        from gaia.core.memory.factory import MemoryFactory
-        from gaia.core.memory.file_store import FileMemoryStore
-
-        settings = Settings(
-            memory=MemoryConfig(backend="file", memory_dir="~/.gaia/memory")
-        )
-        store = MemoryFactory.create(settings)
-
-        assert isinstance(store, FileMemoryStore)
-        # The store's _memory_dir should be an expanded absolute path
-        assert str(store._memory_dir).startswith("/")
+        assert store is not None
+        assert type(store).__name__ == "ChromaMemoryStore"
 
 
 class TestMemoryFactoryCreatesChromaWhenConfigured:
@@ -75,11 +46,11 @@ class TestMemoryFactoryReturnsNoneForUnknownBackend:
     """MemoryFactory.create returns None for unknown backends."""
 
     def test_unknown_backend_returns_none(self):
-        """backend='sqlite' (or anything else) returns None."""
+        """backend='redis' (or anything else invalid) returns None."""
         from gaia.core.memory.factory import MemoryFactory
 
         settings = Settings(
-            memory=MemoryConfig(backend="sqlite", memory_dir="~/.gaia/memory")
+            memory=MemoryConfig(backend="redis", memory_dir="~/.gaia/memory")
         )
         store = MemoryFactory.create(settings)
 
@@ -128,24 +99,17 @@ class TestMemoryLazyInit:
             patch("gaia.gaia_tui_app.load_config", return_value=Settings()),
             patch("gaia.gaia_tui_app.Gaia"),
         ):
-            from gaia.core.memory.file_store import FileMemoryStore
+            from unittest.mock import AsyncMock
 
             app = GaiaTUIApp()
-            app._memory = FileMemoryStore()
-
-            # Call initialize to create a real store, then fail it
-            await app._memory.initialize()
-            # Force a failure by corrupting state, then simulate init_done
-            app._memory = FileMemoryStore()
-            app._initialized = True  # Pretend it was initialized
+            mock_store = AsyncMock()
 
             # Simulate the done callback on a failing task
-
             async def failing_init():
                 raise RuntimeError("disk full")
 
             task = asyncio.create_task(failing_init())
-            app._memory = FileMemoryStore()  # fresh store
+            app._memory = mock_store  # fresh mock store
             app._GaiaTUIApp__memory_init_task = task
             app._GaiaTUIApp__on_memory_init_done(task)
 

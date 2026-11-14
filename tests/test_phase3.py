@@ -532,7 +532,7 @@ class TestPlannerAgent:
                 output=PlannerResult(
                     retrieve=False,
                     queries=[],
-                    note="user switched from file store to ChromaDB",
+                    note="user switched to ChromaDB",
                 ),
             ))
             gaia._Gaia__message_hist = [{"role": "user", "content": "test"}]
@@ -545,7 +545,7 @@ class TestPlannerAgent:
             calls = mock_mem.episodic_record.call_args_list
             assert calls[1][0][0] == "planner_note"
             assert calls[1][1]["payload"]["note"] == (
-                "user switched from file store to ChromaDB"
+                "user switched to ChromaDB"
             )
 
     @pytest.mark.asyncio

@@ -217,5 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# G.A.I.A. user data
+.gaia/
+gaia-memory.db
+settings.json
+logs/
 # Generated database files
 *.db

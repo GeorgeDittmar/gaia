@@ -1,0 +1,91 @@
+# docker-compose.yml — G.A.I.A. application with memory and LLM services
+#
+# Services:
+#   gaia      — The TUI application
+#   postgres  — PostgreSQL + pgvector (semantic + episodic memory)
+#   chroma    — ChromaDB vector store (alternative memory backend)
+#   llama     — (optional) Ollama for the LLM backend
+#
+# Usage:
+#   docker compose up -d              # start everything
+#   docker compose up gaia -d         # start Gaia + dependencies
+#   docker compose logs -f gaia       # follow Gaia's output
+#
+# Memory backend is selected in settings.json:
+#   "memory": { "backend": "postgres" }  — PostgreSQL (default in compose)
+#   "memory": { "backend": "chroma" }    — ChromaDB
+# Gaia resolves services via Docker internal DNS (service name = host).
+
+services:
+  # ── PostgreSQL + pgvector — unified memory store ────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: gaia
+      POSTGRES_PASSWORD: gaia
+      POSTGRES_DB: gaia
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  # ── ChromaDB — alternative vector memory store ──────────────────
+  chroma:
+    build:
+      context: .
+      dockerfile: Dockerfile.chroma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+
+  # ── G.A.I.A. TUI application ────────────────────────────────────
+  gaia:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - chroma
+    environment:
+      - LLM_ENDPOINT=${LLM_ENDPOINT:-http://host.docker.internal:11434}
+      # PostgreSQL memory backend (service-name resolved on Docker network)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=gaia
+      - POSTGRES_PASSWORD=gaia
+      - POSTGRES_DB=gaia
+      # ChromaDB (for chroma backend)
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - GAIA_HOME=/home/gaia/data
+    volumes:
+      - gaia-data:/home/gaia/data
+    stdin_open: true
+    tty: true
+
+  # ── Ollama — local LLM backend (optional) ───────────────────────
+  # Uncomment to run a local LLM in the compose stack:
+  #
+  # llama:
+  #   image: ollama/ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #
+  # Then set: LLM_ENDPOINT=http://llama:11434
+
+volumes:
+  pg-data:
+    driver: local
+  chroma-data:
+    driver: local
+  gaia-data:
+    driver: local
+# ollama-data:
+#   driver: local

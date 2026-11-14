@@ -1,13 +1,18 @@
-"""ChromaDB-backed MemoryStore implementation.
+"""ChromaDB-backed MemoryStore implementation (network server).
 
-Stores all three memory types (semantic, episodic, procedural) and the
-audit log in a persistent ChromaDB instance. ChromaDB handles vector
-embeddings internally, powering semantic search out of the box.
+Connects to an **external ChromaDB HTTP server** — not embedded.
+All ChromaDB calls are wrapped in ``asyncio.to_thread()`` so the
+event loop stays responsive.
 
-All ChromaDB calls are wrapped in ``asyncio.to_thread()`` so the event
-loop stays responsive.
+Configuration:
+    Set ``memory.backend`` to ``"chroma"`` and ``memory.endpoint`` to the
+    ChromaDB server URL (default ``http://host.containers.internal:8000``
+    when running in Docker/Podman, ``http://localhost:8000`` otherwise).
 
-Data directory: ``~/.gaia/chroma`` (created on first ``initialize()``).
+Usage with docker-compose::
+
+    docker compose up -d chroma          # start ChromaDB
+    docker compose up -d gaia            # start Gaia (connects to chroma)
 """
 
 from __future__ import annotations
@@ -16,12 +21,17 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-import chromadb
+try:
+    import chromadb
+    from chromadb import HttpClient
+except ImportError:
+    chromadb = None  # type: ignore[assignment]
+    HttpClient = None  # type: ignore[assignment,misc]
 
 from gaia.core.memory.base import MemoryStore
+from gaia.core.memory.embedding import generate_embedding, embedding_dim
 
 
 def _now_iso() -> str:
@@ -45,53 +55,89 @@ def _sanitize_meta(meta: dict[str, Any]) -> dict[str, Any]:
 class ChromaMemoryStore(MemoryStore):
     """ChromaDB-backed implementation of the MemoryStore protocol.
 
-    Stores semantic facts, episodic events, procedural definitions, and
-    audit log entries in four ChromaDB collections. Vector search is
-    powered by ChromaDB's built-in embedding functions (or a custom
-    one if the client is configured with one).
+    Connects to an external ChromaDB HTTP server. Stores semantic facts,
+    episodic events, procedural definitions, and audit log entries in
+    four ChromaDB collections. Vector search is powered by ChromaDB's
+    built-in embedding functions.
 
     Args:
-        persist_directory: Path to the ChromaDB persistent data
-            directory. Defaults to ``~/.gaia/chroma``.
+        endpoint: URL of the ChromaDB HTTP server.
+            Defaults to ``http://host.containers.internal:8000`` (Docker/
+            Podman) or ``http://localhost:8000`` (host).
+        collection: ChromaDB collection prefix — all four memory types
+            share collections with suffixes (``_semantic``, ``_episodic``,
+            ``_procedure``, ``_audit``).
     """
 
     _COLLECTIONS: tuple[str, ...] = (
-        "semantic_facts",
-        "episodic_events",
-        "procedure_entries",
-        "audit_log",
+        "semantic",
+        "episodic",
+        "procedure",
+        "audit",
     )
 
-    def __init__(self, persist_directory: str | None = None) -> None:
-        if persist_directory is None:
-            persist_directory = str(Path.home() / ".gaia" / "chroma")
-        self._persist_directory = persist_directory
-        self._client: chromadb.Client | None = None
-        self._collections: dict[str, chromadb.Collection] = {}
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        collection: str = "gaia",
+    ) -> None:
+        if endpoint is None:
+            import os
+
+            host = os.environ.get("CHROMA_HOST", "localhost")
+            port = os.environ.get("CHROMA_PORT", "8000")
+            endpoint = f"http://{host}:{port}"
+
+        # Parse "http://host:port" → host + port for chromadb.HttpClient
+        # Handles both "http://host.containers.internal:8000" and "http://localhost:8000"
+        self._endpoint = endpoint
+        self._collection_prefix = collection
+        self._client: HttpClient | None = None
+        self._collections: dict[str, Any] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def initialize(self) -> None:
-        """Open the ChromaDB persistent client and create collections."""
-        self._client = chromadb.PersistentClient(path=self._persist_directory)
+        """Connect to the ChromaDB HTTP server and create collections.
+
+        All collections use explicit client-side embeddings (sentence-transformers)
+        rather than ChromaDB's built-in embedding functions.
+        """
+        if chromadb is None or HttpClient is None:
+            raise RuntimeError(
+                "ChromaDB is not installed. "
+                "Install it with: pip install chromadb"
+            )
+
+        # Parse "http://host:port" into host and port for HttpClient
+        # e.g. "http://host.containers.internal:8000" → host, port
+        parsed = self._endpoint.replace("http://", "").replace("https://", "")
+        host, port = parsed.rsplit(":", 1) if ":" in parsed else (parsed, "8000")
+
+        self._client = HttpClient(host=host, port=int(port))
+        self._embedding_dim = embedding_dim()
         for name in self._COLLECTIONS:
-            self._collections[name] = self._client.get_or_create_collection(name)
+            col_name = f"{self._collection_prefix}_{name}"
+            self._collections[col_name] = self._client.get_or_create_collection(
+                col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
 
     async def close(self) -> None:
-        """Close the ChromaDB client (if supported)."""
-        if self._client is not None:
-            try:
-                self._client.close()  # type: ignore [union-attr]
-            except Exception:
-                pass  # Best-effort; ChromaDB may not support close()
-            self._client = None
-            self._collections.clear()
+        """Release the ChromaDB HTTP connection (best-effort)."""
+        self._client = None
+        self._collections.clear()
 
     # ── Helpers ──────────────────────────────────────────────────
 
     def _thread(self, fn: Any) -> Any:
         """Run *fn* on the event-loop thread pool and return the result."""
         return asyncio.to_thread(fn)
+
+    def _col(self, suffix: str) -> Any:
+        """Get a collection by suffix."""
+        name = f"{self._collection_prefix}_{suffix}"
+        return self._collections.get(name)
 
     # ── Semantic operations ──────────────────────────────────────
 
@@ -116,11 +162,12 @@ class ChromaMemoryStore(MemoryStore):
             "updated_at": now,
             "metadata": None,
         })
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
+        embedding = generate_embedding(content)
 
         await self._thread(
             lambda: collection.add(
-                documents=[content],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[fact_id],
             )
@@ -137,7 +184,7 @@ class ChromaMemoryStore(MemoryStore):
         fact_id metadata), then re-insert with the same fact_id.
         """
         now = _now_iso()
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
 
         # Read current metadata BEFORE deleting
         old_meta: dict[str, Any] = {}
@@ -158,7 +205,7 @@ class ChromaMemoryStore(MemoryStore):
 
         # Delete old document by fact_id
         await self._thread(
-            lambda: collection.delete(where={"fact_id": fact_id})
+            lambda: collection.delete(ids=[fact_id])
         )
 
         metadata = _sanitize_meta({
@@ -174,7 +221,7 @@ class ChromaMemoryStore(MemoryStore):
 
         await self._thread(
             lambda: collection.add(
-                documents=[new_content],
+                embeddings=[generate_embedding(new_content)],
                 metadatas=[metadata],
                 ids=[fact_id],
             )
@@ -182,23 +229,24 @@ class ChromaMemoryStore(MemoryStore):
 
     async def semantic_delete(self, fact_id: str) -> None:
         """Remove a fact by ID."""
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
         await self._thread(
-            lambda: collection.delete(where={"fact_id": fact_id})
+            lambda: collection.delete(ids=[fact_id])
         )
 
     async def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
         """Search semantic facts by vector similarity.
 
         Returns a list of dicts matching the format expected by the
-        agent orchestrator.  None-valued documents are replaced with
+        agent orchestrator. None-valued documents are replaced with
         empty strings.
         """
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
+        query_embedding = generate_embedding(query)
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=min(limit, 1000),
+                query_embeddings=[query_embedding],
             )
         )
 
@@ -233,31 +281,64 @@ class ChromaMemoryStore(MemoryStore):
         return records
 
     async def semantic_similarity_search(
-        self, query: str, limit: int = 5, distance_threshold: float = 0.8
-    ) -> bool:
-        """Check if any fact is semantically similar to *query*.
+        self, query: str, limit: int = 5, distance_threshold: float = 0.3
+    ) -> list[dict]:
+        """Find facts semantically similar to *query*.
 
-        ChromaDB returns distances in its query response — cosine
-        distance where 0 = identical, 2 = opposite.  If any returned
-        distance is <= threshold, the fact is a near-duplicate.
+        Returns a list of matching fact dicts (empty list if none), sorted
+        by cosine distance ascending.  Each dict contains ``fact_id``,
+        ``content``, ``distance`` (cosine), and other fields.
+        Results are filtered to only include facts with distance <= threshold.
         """
-        collection = self._collections["semantic_facts"]
+        collection = self._col("semantic")
+        query_embedding = generate_embedding(query)
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=limit,
+                query_embeddings=[query_embedding],
                 include=["distances"],
             )
         )
 
+        ids = result.get("ids", [])
         distances = result.get("distances", [])
-        if not distances or not distances[0]:
-            return False
+        documents = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
 
-        # Chroma default is cosine distance: 0 = identical, 2 = opposite
-        # Lower distance = more similar.  Threshold 0.8 means
-        # "anything with cosine distance <= 0.8 is considered duplicate"
-        return any(d <= distance_threshold for d in distances[0])
+        if not ids or not ids[0]:
+            return []
+
+        records: list[dict] = []
+        for i in range(len(ids[0])):
+            dist = distances[0][i] if distances and distances[0] else 1.0
+            if dist > distance_threshold:
+                continue  # filter by threshold
+
+            doc = (
+                documents[0][i]
+                if documents and documents[0][i] is not None
+                else ""
+            )
+            meta = (
+                metadatas[0][i]
+                if metadatas and metadatas[0][i]
+                else {}
+            )
+
+            records.append({
+                "fact_id": ids[0][i],
+                "content": doc,
+                "category": meta.get("category", "general"),
+                "confidence": float(meta.get("confidence", 0.0)),
+                "source": meta.get("source", "unknown"),
+                "source_id": meta.get("source_id"),
+                "created_at": meta.get("created_at", ""),
+                "updated_at": meta.get("updated_at", ""),
+                "metadata": meta.get("metadata"),
+                "distance": dist,
+            })
+
+        return records
 
     # ── Episodic operations ──────────────────────────────────────
 
@@ -284,10 +365,11 @@ class ChromaMemoryStore(MemoryStore):
             "indexed_content": indexed_content,
         })
 
-        collection = self._collections["episodic_events"]
+        collection = self._col("episodic")
+        embedding = generate_embedding(summary) if summary else [0.0] * 384
         await self._thread(
             lambda: collection.add(
-                documents=[summary],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[event_id],
             )
@@ -308,15 +390,16 @@ class ChromaMemoryStore(MemoryStore):
           first, then filter results by *event_types* and *time_range*.
         - Otherwise, fetch all documents and filter in Python.
         """
-        collection = self._collections["episodic_events"]
+        collection = self._col("episodic")
         results: dict[str, list] = {}
 
         if query:
-            # Text search first, then filter
+            # Vector search with explicit embeddings, then filter
+            query_embedding = generate_embedding(query)
             query_result = await self._thread(
                 lambda: collection.query(
-                    query_texts=[query],
                     n_results=min(limit * 5, 1000),
+                    query_embeddings=[query_embedding],
                 )
             )
             ids = (
@@ -386,7 +469,7 @@ class ChromaMemoryStore(MemoryStore):
         self, conversation_id: str
     ) -> list[dict]:
         """Retrieve all events for a conversation, ordered by time."""
-        collection = self._collections["episodic_events"]
+        collection = self._col("episodic")
 
         result = await self._thread(
             lambda: collection.get(
@@ -426,12 +509,8 @@ class ChromaMemoryStore(MemoryStore):
         return records
 
     async def episodic_prune(self, before_timestamp: str) -> int:
-        """Remove events older than *before_timestamp*. Returns count deleted.
-
-        ChromaDB's $lt operator only works on numeric values, so we
-        fetch all documents, filter in Python, then delete by IDs.
-        """
-        collection = self._collections["episodic_events"]
+        """Remove events older than *before_timestamp*. Returns count deleted."""
+        collection = self._col("episodic")
 
         result = await self._thread(
             lambda: collection.get(include=["metadatas"])
@@ -490,12 +569,13 @@ class ChromaMemoryStore(MemoryStore):
             "metadata": None,
         })
 
-        collection = self._collections["procedure_entries"]
+        collection = self._col("procedure")
         search_text = f"{name} {description}".strip()
+        embedding = generate_embedding(search_text)
 
         await self._thread(
             lambda: collection.upsert(
-                documents=[search_text],
+                embeddings=[embedding],
                 metadatas=[metadata],
                 ids=[procedure_id],
             )
@@ -503,7 +583,7 @@ class ChromaMemoryStore(MemoryStore):
 
     async def procedure_get(self, procedure_id: str) -> dict | None:
         """Retrieve a procedure by ID, or ``None`` if not found."""
-        collection = self._collections["procedure_entries"]
+        collection = self._col("procedure")
         result = await self._thread(
             lambda: collection.get(
                 ids=[procedure_id],
@@ -525,12 +605,13 @@ class ChromaMemoryStore(MemoryStore):
         self, query: str, category: str | None = None
     ) -> list[dict]:
         """Search procedures by vector similarity on name + description."""
-        collection = self._collections["procedure_entries"]
+        collection = self._col("procedure")
+        query_embedding = generate_embedding(query)
 
         result = await self._thread(
             lambda: collection.query(
-                query_texts=[query],
                 n_results=100,
+                query_embeddings=[query_embedding],
             )
         )
 
@@ -586,7 +667,7 @@ class ChromaMemoryStore(MemoryStore):
             "detail": json.dumps(detail) if detail else None,
         })
 
-        collection = self._collections["audit_log"]
+        collection = self._col("audit")
         await self._thread(
             lambda: collection.add(
                 documents=[action],
@@ -599,22 +680,21 @@ class ChromaMemoryStore(MemoryStore):
 
     async def delete_memory(self, target_type: str, target_id: str) -> None:
         """Delete a memory entry by type and ID."""
-        collection_name: str | None
+        collection_suffix: str | None
         match target_type:
             case "semantic":
-                collection_name = "semantic_facts"
+                collection_suffix = "semantic"
             case "episodic":
-                collection_name = "episodic_events"
+                collection_suffix = "episodic"
             case "procedure":
-                collection_name = "procedure_entries"
+                collection_suffix = "procedure"
             case "audit":
-                collection_name = "audit_log"
+                collection_suffix = "audit"
             case _:
                 return  # Unknown type — silently ignore
 
+        collection_name = f"{self._collection_prefix}_{collection_suffix}"
         collection = self._collections[collection_name]
         await self._thread(
-            lambda: collection.delete(where={"fact_id": target_id})
-            if collection_name == "semantic_facts"
-            else collection.delete(ids=[target_id])
+            lambda: collection.delete(ids=[target_id])
         )
